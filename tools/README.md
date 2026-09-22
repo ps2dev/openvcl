@@ -133,6 +133,22 @@ postincremented pointer. The expected marker is
 arbitrary pre/postincrement motion: such an instruction is still rejected when
 it would itself be part of the cloned cyclic prefix.
 
+The known-induction alias fixture checks the separate case where a delayed
+suffix store crosses an explicit constant pointer update and a later same-base
+store is therefore provably a different address:
+
+```sh
+make -C test/ps2/vu1_alias_induction_differential
+python3 test/ps2/vu1_differential/run_pcsx2.py \
+  --elf test/ps2/vu1_alias_induction_differential/vu1_alias_induction_differential.elf
+```
+
+It compares eight output qwords bit-for-bit, including untouched lanes, and
+requires the final output pointer to be 40. The expected marker is
+`VU1_DIFFERENTIAL_PASS alias-induction rows=8 pointer=40`. Unknown induction
+steps and pre/postincrement instructions cloned into the cyclic prefix remain
+outside this proof.
+
 For scheduler isolation only, the following environment switches disable
 classes of rewrite without changing source shaders: `OPENVCL_DISABLE_MULTI_Q_SOFTWARE_PIPELINE`,
 `OPENVCL_DISABLE_NO_Q_CYCLIC_PREFIX`, `OPENVCL_DISABLE_NO_Q_LOOP_EXTRA_CYCLIC_PREFIX`,

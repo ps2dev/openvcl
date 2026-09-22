@@ -49,3 +49,17 @@ load/store con la misma base. El siguiente candidato general es
 `indexed/xform_loop_lid`, no los loops no-Q con CFG complejo. No convertir aún
 la métrica nueva en gate. Prohibidos atajos por
 nombres, hashes o shaders conocidos. Distingue estimaciones de tiempos reales.
+
+La comprobación de alias de los suffix-store drains entiende ahora inducciones
+self-`iaddiu`/`isubiu` con paso constante entre dos accesos a la misma base. El
+offset del acceso posterior se traduce al espacio de direcciones que existía en
+el store retrasado antes de decidir si pueden aliasar. Un fixture diferencial
+dedicado (`test/ps2/vu1_alias_induction_differential`) compara en PCSX2 ocho
+qwords y el puntero final: `VU1_DIFFERENTIAL_PASS alias-induction rows=8
+pointer=40`. El corpus sigue en **258796** ciclos ponderados, los 19 rewrites
+no-Q siguen aceptados y la invariancia de labels pasa en las cuatro variantes.
+Esto no resuelve `indexed/xform_loop_lid`: su `lqi.w indices, (next_index++)`
+está dentro del prefijo candidato y actualiza precisamente el registro leído
+por el branch. Clonarlo literalmente adelantaría la condición del bucle, por lo
+que ese caso debe modelarse explícitamente y permanecer bloqueado mientras no
+haya una transformación y una prueba runtime equivalentes.

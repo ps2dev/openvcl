@@ -2198,7 +2198,9 @@ namespace
 	                                             unsigned int beginIndex,
 	                                             unsigned int endIndex,
 	                                             const std::vector<const Token*>& indexedTokens,
-	                                             const std::vector<VuSoftwarePipelineSuffixStore>& stores );
+	                                             const std::vector<VuSoftwarePipelineSuffixStore>& stores,
+	                                             const std::vector<VuLoopInductionUpdate>& inductionUpdates );
+	bool setIndirectMemoryOffset( Token& token, const std::string& baseRegister, long offset );
 	Token adjustedMultiQCyclicPrefixToken( const Token& token,
 	                                       const std::vector<VuSoftwarePipelineRotation>& rotations,
 	                                       const std::vector<VuLoopInductionUpdate>& inductionUpdates,
@@ -2415,7 +2417,8 @@ namespace
 			                                           store->tokenIndex + 1,
 			                                           opportunity.branchTokenIndex,
 			                                           indexedTokens,
-			                                           opportunity.softwarePipelineSuffixStores ) )
+			                                           opportunity.softwarePipelineSuffixStores,
+			                                           opportunity.inductionUpdates ) )
 				addSuffixStoreDrainBlocker( opportunity, "delayed_store_memory_dependency" );
 		}
 
@@ -2695,7 +2698,8 @@ namespace
 	                                             unsigned int beginIndex,
 	                                             unsigned int endIndex,
 	                                             const std::vector<const Token*>& indexedTokens,
-	                                             const std::vector<VuSoftwarePipelineSuffixStore>& stores )
+	                                             const std::vector<VuSoftwarePipelineSuffixStore>& stores,
+	                                             const std::vector<VuLoopInductionUpdate>& inductionUpdates )
 	{
 		if( store.tokenIndex >= indexedTokens.size() )
 			return true;
@@ -2709,16 +2713,82 @@ namespace
 			if( tokenIndex == store.tokenIndex || delayedSuffixStoreForTokenIndex( stores, tokenIndex ) )
 				continue;
 
+			Token translatedToken( *indexedTokens[tokenIndex] );
+			const Token* comparedToken = &translatedToken;
 			VuTokenResourceAccess access;
-			if( !buildVuTokenResourceAccess( *indexedTokens[tokenIndex], access ) )
+			if( !buildVuTokenResourceAccess( *comparedToken, access ) )
 				continue;
+
+			/*
+			 * Compare later accesses in the address space that existed at the
+			 * delayed store.  A known self-induction between the two accesses
+			 * changes the effective offset even though both source operands name
+			 * the same VI register (for example 2(out), out += 3, 2(out)).
+			 * Unknown updates remain conservative: without a proven step we cannot
+			 * use the translated offset to dismiss an alias.
+			 */
+			if( storeAccess.hasMemoryBase
+			    && storeAccess.hasMemoryOffset
+			    && access.hasMemoryBase
+			    && access.hasMemoryOffset
+			    && access.memoryBaseRegister == storeAccess.memoryBaseRegister )
+			{
+				long translatedOffset = access.memoryOffset;
+				bool knownTranslation = true;
+				for( unsigned int crossedIndex = store.tokenIndex + 1;
+				     crossedIndex < tokenIndex && crossedIndex < indexedTokens.size();
+				     ++crossedIndex )
+				{
+					VuTokenResourceAccess crossedAccess;
+					if( !buildVuTokenResourceAccess( *indexedTokens[crossedIndex], crossedAccess ) )
+						continue;
+
+					const bool implicitMemoryUpdate =
+					    crossedAccess.hasMemoryBase
+					    && crossedAccess.memoryBaseRegister == access.memoryBaseRegister
+					    && (crossedAccess.memoryFlags
+					        & (VU_MEMORY_FLAG_PREDEC | VU_MEMORY_FLAG_POSTINC));
+					const bool explicitBaseWrite =
+					    containsKey( crossedAccess.registerWrites, access.memoryBaseRegister );
+					if( !implicitMemoryUpdate && !explicitBaseWrite )
+						continue;
+
+					const VuLoopInductionUpdate* knownUpdate = NULL;
+					for( std::vector<VuLoopInductionUpdate>::const_iterator update = inductionUpdates.begin();
+					     update != inductionUpdates.end(); ++update )
+					{
+						if( update->registerName == access.memoryBaseRegister
+						    && update->tokenIndex == crossedIndex )
+						{
+							knownUpdate = &*update;
+							break;
+						}
+					}
+
+					if( implicitMemoryUpdate || !knownUpdate || !knownUpdate->stepKnown )
+					{
+						knownTranslation = false;
+						break;
+					}
+					translatedOffset += knownUpdate->step;
+				}
+				if( knownTranslation && translatedOffset != access.memoryOffset )
+				{
+					if( !setIndirectMemoryOffset( translatedToken,
+					                              access.memoryBaseRegister,
+					                              translatedOffset ) )
+						return true;
+					comparedToken = &translatedToken;
+					access.memoryOffset = translatedOffset;
+				}
+			}
 			if( memoryOrderRequiresDependency( storeAccess,
 			                                  access,
 			                                  *indexedTokens[store.tokenIndex],
-			                                  *indexedTokens[tokenIndex] )
+			                                  *comparedToken )
 			    || memoryOrderRequiresDependency( access,
 			                                     storeAccess,
-			                                     *indexedTokens[tokenIndex],
+			                                     *comparedToken,
 			                                     *indexedTokens[store.tokenIndex] ) )
 				return true;
 		}
@@ -3266,7 +3336,8 @@ namespace
 			                                           store->tokenIndex + 1,
 			                                           opportunity.branchTokenIndex,
 			                                           indexedTokens,
-			                                           opportunity.softwarePipelineSuffixStores ) )
+			                                           opportunity.softwarePipelineSuffixStores,
+			                                           opportunity.inductionUpdates ) )
 				continue;
 
 			std::list<std::string> valueKeys;
@@ -3458,7 +3529,6 @@ namespace
 	bool cyclicPrefixReadsSuffixClobbersBeforeInsertion( const VuLoopPipelineOpportunity& opportunity,
 	                                                     const std::vector<const Token*>& indexedTokens );
 	Token tokenWithoutLabel( const Token& token );
-	bool setIndirectMemoryOffset( Token& token, const std::string& baseRegister, long offset );
 	void rewriteRotatedRegistersToScratch( Token& token,
 	                                       const std::vector<VuSoftwarePipelineRotation>& rotations );
 	Token makeRotationMoveToken( const Token& donor,

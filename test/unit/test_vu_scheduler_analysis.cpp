@@ -2023,6 +2023,97 @@ TEST_CASE("VuSchedulerAnalysis: loaded multi-Q multi-store drains rotate separat
     CHECK(plans[0].drainsSuffixStores);
 }
 
+TEST_CASE("VuSchedulerAnalysis: suffix-store aliasing accounts for known base induction")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("--LoopCS 1, 1"));
+    REQUIRE(program.parse("div q, vf00[w], vf00[w]"));
+    REQUIRE(program.parse("mulq.xyz vf02, vf00, q"));
+    REQUIRE(program.parse("add.xyz vf10, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf11, vf00, vf00"));
+    REQUIRE(program.parse("div q, vf00[w], vf00[w]"));
+    REQUIRE(program.parse("add.xyz vf12, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf13, vf00, vf00"));
+    REQUIRE(program.parse("mulq.xyz vf05, vf00, q"));
+    REQUIRE(program.parse("sq.xyz vf05, 0(vi03)"));
+    REQUIRE(program.parse("iaddiu vi03, vi03, 1"));
+    REQUIRE(program.parse("sq.xyz vf02, 0(vi03)"));
+    REQUIRE(program.parse("lq.xyz vf24, 0(vi04)"));
+    REQUIRE(program.parse("add.xyz vf05, vf24, vf00"));
+    REQUIRE(program.parse("iaddiu vi04, vi04, 1"));
+    REQUIRE(program.parse("iaddiu vi03, vi03, 1"));
+    REQUIRE(program.parse("iaddiu vi01, vi01, 1"));
+    REQUIRE(program.parse("ibne vi01, vi02, loop_lid"));
+
+    for (std::list<vcl::Token>::iterator i = program.tokenizer.tokens().begin();
+         i != program.tokenizer.tokens().end(); ++i)
+    {
+        if (i->operand() && !i->operand()->isPreprocessor())
+            i->setFlags(i->flags() | vcl::Token::PROCESSED);
+    }
+
+    std::vector<vcl::VuLoopPipelineOpportunity> opportunities =
+        vcl::findVuLoopPipelineOpportunities(program.tokenizer.tokens());
+    REQUIRE(opportunities.size() == 1u);
+    CHECK(opportunities[0].canEmitMultiQSoftwarePipeline);
+    CHECK(opportunities[0].canEmitSuffixStoreDrain);
+    CHECK(!hasString(opportunities[0].multiQSoftwarePipelineBlockers,
+                     "partial_loaded_suffix_store_stream"));
+    CHECK(!hasString(opportunities[0].suffixStoreDrainBlockers,
+                     "partial_loaded_suffix_store_stream"));
+
+    REQUIRE(opportunities[0].softwarePipelineSuffixStores.size() == 2u);
+    CHECK(opportunities[0].softwarePipelineSuffixStores[0].delayedDrain);
+    CHECK(opportunities[0].softwarePipelineSuffixStores[1].delayedDrain);
+}
+
+TEST_CASE("VuSchedulerAnalysis: suffix-store aliasing rejects unmodelled base writes")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("--LoopCS 1, 1"));
+    REQUIRE(program.parse("div q, vf00[w], vf00[w]"));
+    REQUIRE(program.parse("mulq.xyz vf02, vf00, q"));
+    REQUIRE(program.parse("add.xyz vf10, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf11, vf00, vf00"));
+    REQUIRE(program.parse("div q, vf00[w], vf00[w]"));
+    REQUIRE(program.parse("add.xyz vf12, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf13, vf00, vf00"));
+    REQUIRE(program.parse("mulq.xyz vf05, vf00, q"));
+    REQUIRE(program.parse("sq.xyz vf05, 0(vi03)"));
+    REQUIRE(program.parse("iadd vi03, vi03, vi06"));
+    REQUIRE(program.parse("iaddiu vi03, vi03, 1"));
+    REQUIRE(program.parse("sq.xyz vf02, 0(vi03)"));
+    REQUIRE(program.parse("lq.xyz vf24, 0(vi04)"));
+    REQUIRE(program.parse("add.xyz vf05, vf24, vf00"));
+    REQUIRE(program.parse("iaddiu vi04, vi04, 1"));
+    REQUIRE(program.parse("iaddiu vi03, vi03, 1"));
+    REQUIRE(program.parse("iaddiu vi01, vi01, 1"));
+    REQUIRE(program.parse("ibne vi01, vi02, loop_lid"));
+
+    for (std::list<vcl::Token>::iterator i = program.tokenizer.tokens().begin();
+         i != program.tokenizer.tokens().end(); ++i)
+    {
+        if (i->operand() && !i->operand()->isPreprocessor())
+            i->setFlags(i->flags() | vcl::Token::PROCESSED);
+    }
+
+    std::vector<vcl::VuLoopPipelineOpportunity> opportunities =
+        vcl::findVuLoopPipelineOpportunities(program.tokenizer.tokens());
+    REQUIRE(opportunities.size() == 1u);
+    CHECK(hasString(opportunities[0].multiQSoftwarePipelineBlockers,
+                    "partial_loaded_suffix_store_stream"));
+    CHECK(hasString(opportunities[0].suffixStoreDrainBlockers,
+                    "partial_loaded_suffix_store_stream"));
+    for (std::vector<vcl::VuSoftwarePipelineSuffixStore>::const_iterator store =
+             opportunities[0].softwarePipelineSuffixStores.begin();
+         store != opportunities[0].softwarePipelineSuffixStores.end(); ++store)
+        CHECK(!store->delayedDrain);
+}
+
 TEST_CASE("VuSchedulerAnalysis: generic cyclic prefixes can rotate no-Q counted loops")
 {
     vcl::Error::ResetErrorCount();

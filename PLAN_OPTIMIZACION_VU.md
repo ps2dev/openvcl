@@ -233,6 +233,15 @@ Elegir las primeras optimizaciones por evidencia, no por el nombre del shader.
    cyclic-prefix antes de su primer consumidor. `general_quad` valida esta
    frontera durante 12 frames contra Sony en PCSX2. Los streams load/store con
    la misma base siguen bloqueados por `read_write_memory_stream_conflict`.
+   Para stores del mismo stream, una inducción self-`iaddiu`/`isubiu` de paso
+   constante entre accesos puede usarse para traducir ambos offsets al mismo
+   espacio de direcciones antes del análisis de alias. Este caso dispone de
+   diferencial PCSX2 (`vu1_alias_induction_differential`) sobre memoria y
+   puntero final. No confundirlo con un `LQI/SQI` clonado: si el propio acceso
+   con pre/postincremento forma parte del prefijo, su actualización del VI
+   sigue siendo un side effect bloqueante. En particular
+   `indexed/xform_loop_lid` contiene `lqi.w (...next_index++)` y
+   `next_index` alimenta la condición de salida.
 
 **Entrega:** mejoras por categoría de bucle, cada una con casos positivos,
 negativos y diferenciales; fallback seguro cuando la transformación no es legal.
