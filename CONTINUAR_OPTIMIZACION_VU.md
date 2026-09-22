@@ -23,9 +23,10 @@ El dump de loops publica 81 candidatos: **35 sin Q y 46 con Q**. La ruta
 cyclic-prefix ya acepta 18 de los no-Q. `tools/analyze_ps2gl_no_q_rewrites.py`
 ha revelado dos sesgos estáticos: hasta 4 ciclos entre el `bestCycles` aislado
 del selector y el loop realmente emitido, y 6 ciclos de cola de salida que el
-coste por label atribuye al loop. Ejemplos `general`: dir-light 63 -> 46
-previstos -> 50 emitidos -> 56 bloque; final 13 -> 7 -> 11 -> 17. No se ha
-cambiado scheduling por este hallazgo. Cuando haya runtime, valida primero el
-harness y `general_quad`; mientras tanto corrige/expón métricas de rentabilidad
-en contexto y después continúa aliasing/autoincremento. Prohibidos atajos por
+coste por label atribuye al loop. El diagnóstico `bestCyclesInContext` conserva
+el prólogo y reduce el primer error a como máximo 1 ciclo sin afectar decisiones:
+en `general`, dir-light 63 -> 46 aislado -> 50 contexto -> 50 emitido -> 56
+bloque; final 13 -> 7 -> 10 -> 11 -> 17. Cuando haya runtime, valida primero el
+harness y `general_quad`; mientras tanto explica el ciclo residual y mejora la
+contabilidad steady-state, sin convertir aún la métrica nueva en gate. Prohibidos atajos por
 nombres, hashes o shaders conocidos. Distingue estimaciones de tiempos reales.

@@ -30,7 +30,8 @@ TRACE_START = re.compile(
     r"\[cyclic-prefix-trace\] loop=(\S+) branchOffset=(\d+) baselineCycles=(\d+)"
 )
 TRACE_RESULT = re.compile(
-    r"\[cyclic-prefix-trace\] loop=(\S+) result=(ACCEPTED|no_improvement) bestCycles=(\d+)"
+    r"\[cyclic-prefix-trace\] loop=(\S+) result=(ACCEPTED|no_improvement) "
+    r"bestCycles=(\d+)(?: bestCyclesInContext=(\d+))?"
 )
 
 
@@ -64,6 +65,9 @@ def parse_accepted(stderr):
         accepted[label] = {
             "selector_baseline_cycles": baselines.get(label),
             "selector_best_cycles": int(match.group(3)),
+            "selector_best_cycles_in_context": (
+                int(match.group(4)) if match.group(4) is not None else None
+            ),
         }
     return accepted
 
@@ -153,6 +157,7 @@ def main():
                 }
                 baseline_cycles = row["selector_baseline_cycles"]
                 best_cycles = row["selector_best_cycles"]
+                context_cycles = row["selector_best_cycles_in_context"]
                 emitted_cycles = row["emitted_loop_cycles_through_delay"]
                 block_cycles = row["cost_label_block_cycles"]
                 row["selector_gain_cycles"] = (
@@ -163,6 +168,11 @@ def main():
                 row["emission_gap_vs_selector_best"] = (
                     emitted_cycles - best_cycles
                     if emitted_cycles is not None and best_cycles is not None
+                    else None
+                )
+                row["emission_gap_vs_selector_context"] = (
+                    emitted_cycles - context_cycles
+                    if emitted_cycles is not None and context_cycles is not None
                     else None
                 )
                 row["label_block_exit_tail_cycles"] = (
@@ -185,6 +195,11 @@ def main():
             "max_emission_gap_vs_selector_best": max(
                 (r["emission_gap_vs_selector_best"] for r in rows
                  if r["emission_gap_vs_selector_best"] is not None),
+                default=0,
+            ),
+            "max_emission_gap_vs_selector_context": max(
+                (abs(r["emission_gap_vs_selector_context"]) for r in rows
+                 if r["emission_gap_vs_selector_context"] is not None),
                 default=0,
             ),
             "max_label_block_exit_tail_cycles": max(

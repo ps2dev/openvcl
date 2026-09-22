@@ -20,6 +20,9 @@
 - Added a ps2gl no-Q rewrite diagnostic that separates cyclic-prefix selector
   estimates, emitted steady-state loop rows, and label-block cost so planner /
   emitter and loop-exit accounting gaps can be measured reproducibly.
+- Cyclic-prefix tracing now also reports an in-context main-loop estimate that
+  carries prolog scheduling state into the main body without changing rewrite
+  selection or emitted code.
 - Cost reports now include static cycles, estimated cycles, FDIV/EFU producer
   issue stalls, explicit `waitq`/`waitp` stalls, slot usage, paired cycles,
   NOP slots, per-label block costs, and weighted hot-block rankings.

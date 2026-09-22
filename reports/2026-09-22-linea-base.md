@@ -141,9 +141,12 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    modela esperas Q/P. `tools/analyze_ps2gl_no_q_rewrites.py` muestra que los
    18 rewrites no-Q aceptados tienen una diferencia de hasta **4 ciclos** entre
    el `bestCycles` usado por el selector aislado y las filas del bucle realmente
-   emitido hasta su delay slot. En `general`, `dir_light_vert_loop_lid` pasa de
-   63 ciclos baseline a 46 previstos, pero ocupa 50 ciclos steady-state; para
-   `final_loop_lid`, 13 -> 7 previstos termina en 11. Además, el bloque textual
+   emitido hasta su delay slot. El nuevo diagnóstico `bestCyclesInContext`, que
+   conserva el estado del prólogo al estimar el main pero **no cambia la
+   selección**, reduce ese error máximo a **1 ciclo** en el corpus. En `general`,
+   `dir_light_vert_loop_lid` pasa de 63 ciclos baseline a 46 previstos aislados,
+   50 in-context y 50 emitidos; para `final_loop_lid`, 13 -> 7 -> 10 -> 11.
+   Además, el bloque textual
    de `VsmCostAnalyzer` añade **6 ciclos de cola de salida** después del backedge
    en estos casos (50 -> 56 y 11 -> 17), y el preset los pondera junto con el
    loop. Por tanto, 56/17 siguen siendo útiles como coste estructural histórico,
@@ -194,9 +197,10 @@ resumidos; para reproducirlos en otra máquina ejecutar de nuevo las herramienta
 Completar fase 1 antes de promover cambios de scheduling: ejecutar en PS2/PCSX2
 el harness diferencial VU1 ya construido y extender el oráculo a memoria/paquetes
 GIF de `general_quad`. Mientras ese runtime no esté disponible, el siguiente
-trabajo no invasivo es hacer que la rentabilidad del planner mida de forma
-coherente el contexto que verá el emisor y separar la cola de salida del coste
-steady-state de loops, sin usar nombres de shaders para tomar decisiones.
+trabajo no invasivo es explicar el ciclo residual de `final_loop_lid` y separar
+la cola de salida del coste steady-state de loops. `bestCyclesInContext` queda
+por ahora estrictamente diagnóstico: no usarlo como gate hasta cerrar el oráculo
+runtime. No usar nombres de shaders para tomar decisiones.
 
 No alterar latencias de hardware ni habilitar un pase experimental para conseguir
 una tabla favorable. No considerar ensamblado, invariancia de nombres o capturas

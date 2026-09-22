@@ -3848,10 +3848,11 @@ namespace
 		return false;
 	}
 
-	unsigned int multiQPipelineCandidateMainCycles( const VuLoopPipelineOpportunity& candidate,
-	                                                const std::vector<const Token*>& indexedTokens )
+	void appendMultiQPipelineCandidateMainForScheduleCost(
+	    std::list<Token>& mainTokens,
+	    const VuLoopPipelineOpportunity& candidate,
+	    const std::vector<const Token*>& indexedTokens )
 	{
-		std::list<Token> mainTokens;
 		appendMultiQRotationMovesForScheduleCost( mainTokens, candidate, indexedTokens );
 		bool emittedPrefix = false;
 		for( std::vector<unsigned int>::const_iterator i = candidate.multiQMainTokenIndices.begin();
@@ -3873,6 +3874,13 @@ namespace
 			appendMultiQCyclicPrefixForScheduleCost( mainTokens, candidate, indexedTokens );
 		if( candidate.branchTokenIndex < indexedTokens.size() )
 			appendUnlabeledTokenForScheduleCost( mainTokens, *indexedTokens[candidate.branchTokenIndex] );
+	}
+
+	unsigned int multiQPipelineCandidateMainCycles( const VuLoopPipelineOpportunity& candidate,
+	                                                const std::vector<const Token*>& indexedTokens )
+	{
+		std::list<Token> mainTokens;
+		appendMultiQPipelineCandidateMainForScheduleCost( mainTokens, candidate, indexedTokens );
 		const unsigned int cycles = scheduleVuProgramReadyIssueSlotsWithFlagLiveness( mainTokens ).cycleCount;
 		return candidate.multiQCyclicPrefixLastTokenInBranchDelaySlot && cycles > 0
 		     ? cycles - 1
@@ -4066,6 +4074,29 @@ namespace
 		const unsigned int totalCycles =
 		    scheduleVuProgramReadyIssueSlotsWithFlagLiveness( combinedTokens ).cycleCount;
 		return totalCycles >= prologCycles ? totalCycles - prologCycles : 0;
+	}
+
+	unsigned int multiQPipelineCandidateMainCyclesInContext(
+	    const VuLoopPipelineOpportunity& candidate,
+	    const std::vector<const Token*>& indexedTokens )
+	{
+		std::list<Token> combinedTokens;
+		for( std::vector<unsigned int>::const_iterator i = candidate.multiQPrologTokenIndices.begin();
+		     i != candidate.multiQPrologTokenIndices.end(); ++i )
+		{
+			if( *i < indexedTokens.size() )
+				combinedTokens.push_back( adjustedMultiQCyclicPrefixToken(
+				    *indexedTokens[*i], candidate.multiQCyclicPrefixRotations ) );
+		}
+		const unsigned int prologCycles =
+		    scheduleVuProgramReadyIssueSlotsWithFlagLiveness( combinedTokens ).cycleCount;
+		appendMultiQPipelineCandidateMainForScheduleCost( combinedTokens, candidate, indexedTokens );
+		const unsigned int totalCycles =
+		    scheduleVuProgramReadyIssueSlotsWithFlagLiveness( combinedTokens ).cycleCount;
+		unsigned int mainCycles = totalCycles >= prologCycles ? totalCycles - prologCycles : 0;
+		if( candidate.multiQCyclicPrefixLastTokenInBranchDelaySlot && mainCycles > 0 )
+			--mainCycles;
+		return mainCycles;
 	}
 
 	bool cyclicPrefixMainStartsWithStore( const VuLoopPipelineOpportunity& candidate,
@@ -4500,9 +4531,13 @@ namespace
 
 		if( dumpRejections )
 		{
+			const unsigned int bestCyclesInContext = found
+			    ? multiQPipelineCandidateMainCyclesInContext( bestCandidate, indexedTokens )
+			    : bestCycles;
 			std::cerr << "[cyclic-prefix-trace] loop=" << loop.label
 			          << " result=" << ( found ? "ACCEPTED" : "no_improvement" )
-			          << " bestCycles=" << bestCycles << "\n";
+			          << " bestCycles=" << bestCycles
+			          << " bestCyclesInContext=" << bestCyclesInContext << "\n";
 		}
 
 		if( !found )
