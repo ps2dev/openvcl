@@ -43,6 +43,7 @@ def patch_config(source_config: Path, source_data: Path, destination: Path) -> N
     saw_bios = False
     saw_system_console = False
     saw_ee_console = False
+    saw_iop_console = False
     output = []
 
     for original in source_config.read_text().splitlines():
@@ -70,6 +71,9 @@ def patch_config(source_config: Path, source_data: Path, destination: Path) -> N
         elif section == "Logging" and key_name == "EnableEEConsole":
             output.append("EnableEEConsole = true")
             saw_ee_console = True
+        elif section == "Logging" and key_name == "EnableIOPConsole":
+            output.append("EnableIOPConsole = true")
+            saw_iop_console = True
         else:
             output.append(original)
 
@@ -80,6 +84,8 @@ def patch_config(source_config: Path, source_data: Path, destination: Path) -> N
         missing.append("[Logging] EnableSystemConsole")
     if not saw_ee_console:
         missing.append("[Logging] EnableEEConsole")
+    if not saw_iop_console:
+        missing.append("[Logging] EnableIOPConsole")
     if missing:
         raise RuntimeError("PCSX2.ini is missing required keys: " + ", ".join(missing))
 

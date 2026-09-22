@@ -1,5 +1,4 @@
 #include <kernel.h>
-#include <sio.h>
 #include <stdio.h>
 #include <string.h>
 #include <tamtypes.h>
@@ -131,7 +130,6 @@ int main(void)
                 candidate_output);
 
     if (memcmp(candidate_output, baseline_output, sizeof(candidate_output)) != 0) {
-        sio_puts("VU1_DIFFERENTIAL_FAIL candidate differs from baseline\n");
         printf("VU1_DIFFERENTIAL_FAIL candidate differs from baseline\n");
         for (row = 0; row < CASE_COUNT; ++row) {
             printf("row %d candidate=%08x %08x %08x %08x baseline=%08x %08x %08x %08x\n",
@@ -145,12 +143,10 @@ int main(void)
     }
 
     if (!check_expected(candidate_output)) {
-        sio_puts("VU1_DIFFERENTIAL_FAIL shared output is not the expected result\n");
         printf("VU1_DIFFERENTIAL_FAIL shared output is not the expected result\n");
         return 2;
     }
 
-    sio_puts("VU1_DIFFERENTIAL_PASS\n");
     printf("VU1_DIFFERENTIAL_PASS rows=%d\n", CASE_COUNT);
     return 0;
 }
