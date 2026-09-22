@@ -2134,6 +2134,96 @@ TEST_CASE("VuSchedulerAnalysis: no-Q cyclic prefixes can fill value-chain latenc
     CHECK(sawClonedLoadBeforeFirstMul);
 }
 
+TEST_CASE("VuSchedulerAnalysis: no-Q cyclic prefixes preserve live-out MAC flags")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("iaddiu vi01, vi00, 0"));
+    REQUIRE(program.parse("iaddiu vi02, vi00, 32"));
+    REQUIRE(program.parse("iaddiu vi03, vi00, 12"));
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("--LoopCS 1, 3"));
+    REQUIRE(program.parse("lq.xyz vf31, 1(vi01)"));
+    REQUIRE(program.parse("mul.xyz vf30, vf19, vf31"));
+    REQUIRE(program.parse("adday.z acc, vf30, vf30"));
+    REQUIRE(program.parse("maddx.z vf30, vf12, vf30"));
+    REQUIRE(program.parse("maxx.z vf30, vf30, vf00"));
+    REQUIRE(program.parse("mulz.xyz vf29, vf14, vf30"));
+    REQUIRE(program.parse("mula.xyz acc, vf29, vf08"));
+    REQUIRE(program.parse("mul.xyz vf28, vf23, vf31"));
+    REQUIRE(program.parse("mr32.xyw vf28, vf28"));
+    REQUIRE(program.parse("addax.w acc, vf28, vf28"));
+    REQUIRE(program.parse("maddy.w vf31, vf00, vf28"));
+    REQUIRE(program.parse("maxx.w vf31, vf31, vf00"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("maddaw.xyz acc, vf17, vf31"));
+    REQUIRE(program.parse("madd.xyz vf16, vf13, vf06"));
+    REQUIRE(program.parse("lq.xyz vf21, 1(vi02)"));
+    REQUIRE(program.parse("add.xyz vf16, vf21, vf16"));
+    REQUIRE(program.parse("sq.xyz vf16, 1(vi02)"));
+    REQUIRE(program.parse("iaddiu vi01, vi01, 3"));
+    REQUIRE(program.parse("iaddiu vi02, vi02, 3"));
+    REQUIRE(program.parse("ibne vi01, vi03, loop_lid"));
+    REQUIRE(program.parse("nop"));
+    REQUIRE(program.parse("iaddiu vi04, vi00, 0xffff"));
+    REQUIRE(program.parse("fmand vi05, vi04"));
+    REQUIRE(program.parse("isw.x vi05, 80(vi00)"));
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans =
+        vcl::buildVuSoftwarePipelineRewritePlans(program.tokenizer.tokens());
+    CHECK(plans.empty());
+}
+
+TEST_CASE("VuSchedulerAnalysis: no-Q cyclic prefixes may clobber dead MAC flags")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("iaddiu vi01, vi00, 0"));
+    REQUIRE(program.parse("iaddiu vi02, vi00, 32"));
+    REQUIRE(program.parse("iaddiu vi03, vi00, 12"));
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("--LoopCS 1, 3"));
+    REQUIRE(program.parse("lq.xyz vf31, 1(vi01)"));
+    REQUIRE(program.parse("mul.xyz vf30, vf19, vf31"));
+    REQUIRE(program.parse("adday.z acc, vf30, vf30"));
+    REQUIRE(program.parse("maddx.z vf30, vf12, vf30"));
+    REQUIRE(program.parse("maxx.z vf30, vf30, vf00"));
+    REQUIRE(program.parse("mulz.xyz vf29, vf14, vf30"));
+    REQUIRE(program.parse("mula.xyz acc, vf29, vf08"));
+    REQUIRE(program.parse("mul.xyz vf28, vf23, vf31"));
+    REQUIRE(program.parse("mr32.xyw vf28, vf28"));
+    REQUIRE(program.parse("addax.w acc, vf28, vf28"));
+    REQUIRE(program.parse("maddy.w vf31, vf00, vf28"));
+    REQUIRE(program.parse("maxx.w vf31, vf31, vf00"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("maddaw.xyz acc, vf17, vf31"));
+    REQUIRE(program.parse("madd.xyz vf16, vf13, vf06"));
+    REQUIRE(program.parse("lq.xyz vf21, 1(vi02)"));
+    REQUIRE(program.parse("add.xyz vf16, vf21, vf16"));
+    REQUIRE(program.parse("sq.xyz vf16, 1(vi02)"));
+    REQUIRE(program.parse("iaddiu vi01, vi01, 3"));
+    REQUIRE(program.parse("iaddiu vi02, vi02, 3"));
+    REQUIRE(program.parse("ibne vi01, vi03, loop_lid"));
+    REQUIRE(program.parse("nop"));
+    REQUIRE(program.parse("add.xyz vf20, vf20, vf20"));
+    REQUIRE(program.parse("iaddiu vi04, vi00, 0xffff"));
+    REQUIRE(program.parse("fmand vi05, vi04"));
+    REQUIRE(program.parse("isw.x vi05, 80(vi00)"));
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans =
+        vcl::buildVuSoftwarePipelineRewritePlans(program.tokenizer.tokens());
+    REQUIRE(plans.size() == 1u);
+    CHECK(plans[0].label == "loop_lid");
+}
+
 TEST_CASE("VuSchedulerAnalysis: multi-Q software pipeline blocks cyclic prefixes that read clobbered suffix values")
 {
     vcl::Error::ResetErrorCount();

@@ -1023,6 +1023,130 @@ namespace
 		return false;
 	}
 
+	bool implicitResourceReadBeforeWriteFrom(
+	    unsigned int tokenIndex,
+	    unsigned int resource,
+	    const std::vector<const Token*>& indexedTokens,
+	    const std::map<std::string, unsigned int>& labels,
+	    std::set<unsigned int>& active )
+	{
+		if( tokenIndex >= indexedTokens.size() )
+			return false;
+		if( active.find( tokenIndex ) != active.end() )
+			return false;
+
+		active.insert( tokenIndex );
+		VuTokenResourceAccess access;
+		const bool hasAccess = buildVuTokenResourceAccess( *indexedTokens[tokenIndex], access );
+		if( hasAccess && (access.implicitReads & resource) )
+		{
+			active.erase( tokenIndex );
+			return true;
+		}
+		if( hasAccess && (access.implicitWrites & resource) )
+		{
+			active.erase( tokenIndex );
+			return false;
+		}
+
+		bool live = false;
+		if( hasAccess && (access.instructionFlags & VU_INSTR_BRANCH) )
+		{
+			if( access.instructionFlags & VU_INSTR_REGISTER_BRANCH )
+			{
+				// The target is not statically knowable.  A caller-visible implicit
+				// resource cannot be proven dead across this control-flow boundary.
+				live = true;
+			}
+			else
+			{
+				std::string targetLabel;
+				std::map<std::string, unsigned int>::const_iterator target = labels.end();
+				if( branchTargetLabel( *indexedTokens[tokenIndex], targetLabel ) )
+					target = labels.find( targetLabel );
+				if( target == labels.end() )
+					live = true;
+				else
+					live = implicitResourceReadBeforeWriteFrom( target->second,
+					                                                resource,
+					                                                indexedTokens,
+					                                                labels,
+					                                                active );
+
+				if( !(access.instructionFlags & VU_INSTR_UNCONDITIONAL_BRANCH) )
+					live = live || implicitResourceReadBeforeWriteFrom( tokenIndex + 1,
+					                                                      resource,
+					                                                      indexedTokens,
+					                                                      labels,
+					                                                      active );
+			}
+		}
+		else
+		{
+			live = implicitResourceReadBeforeWriteFrom( tokenIndex + 1,
+			                                                resource,
+			                                                indexedTokens,
+			                                                labels,
+			                                                active );
+		}
+
+		active.erase( tokenIndex );
+		return live;
+	}
+
+	bool cyclicPrefixClobbersLiveOutImplicitResource(
+	    const VuLoopPipelineOpportunity& candidate,
+	    const std::vector<const Token*>& indexedTokens )
+	{
+		if( candidate.multiQCyclicPrefixNeedsGuard )
+			return false;
+
+		unsigned int speculativeWrites = VU_RESOURCE_NONE;
+		for( std::vector<unsigned int>::const_iterator i =
+		         candidate.multiQCyclicPrefixTokenIndices.begin();
+		     i != candidate.multiQCyclicPrefixTokenIndices.end(); ++i )
+		{
+			if( *i >= indexedTokens.size() )
+				return true;
+			VuTokenResourceAccess access;
+			if( !buildVuTokenResourceAccess( *indexedTokens[*i], access ) )
+				continue;
+			speculativeWrites |= access.implicitWrites;
+		}
+		if( speculativeWrites == VU_RESOURCE_NONE )
+			return false;
+
+		std::map<std::string, unsigned int> labels;
+		for( unsigned int i = 0; i < indexedTokens.size(); ++i )
+		{
+			if( indexedTokens[i]->label().length() != 0 )
+				labels[indexedTokens[i]->label()] = i;
+		}
+
+		const unsigned int resources[] = {
+			VU_RESOURCE_ACC,
+			VU_RESOURCE_I,
+			VU_RESOURCE_Q,
+			VU_RESOURCE_P,
+			VU_RESOURCE_R,
+			VU_RESOURCE_MAC,
+			VU_RESOURCE_CLIP
+		};
+		for( unsigned int i = 0; i < sizeof(resources) / sizeof(resources[0]); ++i )
+		{
+			if( !(speculativeWrites & resources[i]) )
+				continue;
+			std::set<unsigned int> active;
+			if( implicitResourceReadBeforeWriteFrom( candidate.branchTokenIndex + 1,
+			                                        resources[i],
+			                                        indexedTokens,
+			                                        labels,
+			                                        active ) )
+				return true;
+		}
+		return false;
+	}
+
 	bool tokenIsLoopDirective( const Token& token )
 	{
 		return token.operand() && token.operand()->name() == "--LoopCS";
@@ -4479,6 +4603,13 @@ namespace
 					          << " (suffix_clobber_at_branch="
 					          << ( cyclicPrefixReadsSuffixClobbers( candidate, indexedTokens ) ? 1 : 0 )
 					          << ")\n";
+				continue;
+			}
+			if( cyclicPrefixClobbersLiveOutImplicitResource( candidate, indexedTokens ) )
+			{
+				if( dumpRejections )
+					std::cerr << "[cyclic-prefix-trace]   split=" << splitOffset
+					          << " rejected=implicit_live_out\n";
 				continue;
 			}
 
@@ -9447,6 +9578,14 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( const std::list<Token>& tokens )
 {
 	std::vector<VuSoftwarePipelineRewritePlan> plans;
+	const bool disableMultiQSoftwarePipeline =
+	    std::getenv( "OPENVCL_DISABLE_MULTI_Q_SOFTWARE_PIPELINE" ) != NULL;
+	const bool disableNoQCyclicPrefix =
+	    std::getenv( "OPENVCL_DISABLE_NO_Q_CYCLIC_PREFIX" ) != NULL;
+	const bool disableNoQLoopExtraCyclicPrefix =
+	    std::getenv( "OPENVCL_DISABLE_NO_Q_LOOP_EXTRA_CYCLIC_PREFIX" ) != NULL;
+	const bool disableNoQPlainCyclicPrefix =
+	    std::getenv( "OPENVCL_DISABLE_NO_Q_PLAIN_CYCLIC_PREFIX" ) != NULL;
 	std::vector<const Token*> indexedTokens;
 	for( std::list<Token>::const_iterator token = tokens.begin(); token != tokens.end(); ++token )
 		indexedTokens.push_back( &*token );
@@ -9510,6 +9649,8 @@ std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( 
 
 		if( i->canEmitMultiQSoftwarePipeline )
 		{
+			if( disableMultiQSoftwarePipeline )
+				continue;
 			if( !i->qProducerTokenIndices.empty() )
 				plan.qProducerTokenIndex = i->qProducerTokenIndices.front();
 			plan.cyclicPrefixBeforeBranch = true;
@@ -9568,6 +9709,12 @@ std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( 
 	for( std::vector<VuLoopCandidate>::const_iterator loop = loops.begin();
 	     loop != loops.end(); ++loop )
 	{
+		if( disableNoQCyclicPrefix )
+			continue;
+		const bool usesLoopExtra = loopUsesLoopExtraDirective( *loop, indexedTokens );
+		if( (disableNoQLoopExtraCyclicPrefix && usesLoopExtra)
+		    || (disableNoQPlainCyclicPrefix && !usesLoopExtra) )
+			continue;
 		if( plannedLabelIndices.find( loop->labelTokenIndex ) != plannedLabelIndices.end() )
 			continue;
 		VuSoftwarePipelineRewritePlan plan;
