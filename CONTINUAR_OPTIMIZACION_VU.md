@@ -7,17 +7,18 @@ Lee `PLAN_OPTIMIZACION_VU.md`, `reports/2026-09-22-linea-base.md` y
 `/Users/fjtrujy/Projects/masp` y PS2DEV en
 `/Users/fjtrujy/toolchains/ps2/ps2dev`.
 
-Fase 0 completada: 419 tests OpenVCL y 5 grupos MASP pasan; 13 pares Sony y
+Fase 0 completada: 423 tests OpenVCL y 5 grupos MASP pasan; 13 pares Sony y
 52 candidatos ensamblan; 52 pruebas de renombrado de etiquetas pasan. Línea
 base reproducida en `build/baselines/verified`. Genérico: 265450 ciclos
 ponderados estimados frente a 100870 Sony. Kernel experimental: 267740;
 no activarlo. No se ha optimizado todavía el compilador.
 
-Sigue fase 1: corrige primero el parser de costes que omite instrucciones
- desconocidas (`nop mystery VI01, VI02` da unknown=0), con regresiones y sin
-alterar costes del corpus válido. Construye validación diferencial VU1 antes
-de modificar scheduling; `general_quad` aún necesita comprobación funcional.
-PCSX2 está instalado pero faltan permisos para control visual del escritorio.
+Fase 1 en curso: el parser de costes estricto está corregido en `5516c71`;
+los 65 informes guardados conservan exactamente sus métricas. Existe
+`test/ps2/vu1_differential/`, un primer harness que compara memoria VU1 entre
+la ruta pipeline y `--disable-generic-software-pipelining`, y compila hasta ELF.
+Falta ejecutarlo: PS2Link no respondió en la última sesión y PCSX2 sigue sin
+control de escritorio. `general_quad` aún necesita comprobación funcional.
 Después prioriza los bucles sin Q (hoy descartados por el planner), coste del
 renombrado y aliasing/autoincremento. Prohibidos atajos por nombres, hashes o
 shaders conocidos. Distingue estimaciones de tiempos reales. Actualiza el

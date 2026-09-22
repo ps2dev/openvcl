@@ -13,8 +13,10 @@ ensamblados, procedencia abierta verificada, comparación de cuatro modos y
 regeneración incremental comprobada. Inicio de fases 1/2: auditoría del modelo
 y diagnóstico de los bucles. El primer fallo de la fase 1, que permitía omitir
 instrucciones desconocidas del coste, ya está corregido y cubierto por pruebas.
-**No se ha modificado el optimizador, no hay aún una nueva mejora de rendimiento
-ni equivalencia funcional demostrada.**
+También existe ya un primer harness diferencial VU1 ejecutable para comparar el
+pipeline genérico con la ruta conservadora. **No se ha modificado el optimizador,
+no hay aún una nueva mejora de rendimiento ni equivalencia funcional con Sony
+demostrada.**
 
 ## Cambios
 
@@ -32,6 +34,10 @@ ni equivalencia funcional demostrada.**
   La dependencia conservadora en todas las macros/cabeceras puede recompilar
   más shaders de los estrictamente necesarios, evitando resultados obsoletos.
 - MASP no requiere cambios de código en esta fase.
+- `test/ps2/vu1_differential/` añade un microprograma terminante y un ELF que
+  ejecuta, desde el mismo estado de memoria, la ruta genérica y la misma entrada
+  compilada con `--disable-generic-software-pipelining`. Compara los qwords de
+  salida bit a bit y además comprueba valores esperados independientes.
 
 ## Validación ejecutada
 
@@ -52,6 +58,10 @@ ni equivalencia funcional demostrada.**
 - PCSX2 v2.9.74 está instalado. El control de escritorio devuelve
   `Computer Use permissions are not granted`: **no se ha observado el renderizado**
   ni confirmado que el fallo histórico de `general_quad` esté resuelto.
+- El nuevo harness diferencial compila hasta ELF con el toolchain PS2 y verifica
+  durante el build que el candidato contiene prólogo de software pipeline y el
+  baseline no. En esta sesión `fsclient devlist` y `ps2client execee` no obtienen
+  respuesta de PS2Link, por lo que su comparación runtime sigue pendiente.
 
 ## Costes obtenidos
 

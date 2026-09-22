@@ -11,6 +11,9 @@
 - VSM cost analysis now rejects unknown instructions, malformed operands, and
   invalid issue-slot layouts instead of silently omitting them from the cost;
   diagnostics include the input name and source line.
+- Added a PS2 VU1 differential harness that builds the same terminating source
+  through the normal software-pipelined path and a conservative no-pipeline
+  path, restores identical VU1 memory, and compares output qwords at runtime.
 - Cost reports now include static cycles, estimated cycles, FDIV/EFU producer
   issue stalls, explicit `waitq`/`waitp` stalls, slot usage, paired cycles,
   NOP slots, per-label block costs, and weighted hot-block rankings.
