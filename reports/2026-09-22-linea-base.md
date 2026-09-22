@@ -56,13 +56,15 @@ rendimiento ni equivalencia funcional con Sony demostrada.**
 - Compilan `box.elf`, `nehe_lesson04.elf` y `nehe_lesson05.elf` tanto con
   OpenVCL puro como con Sony; existe `libps2stuff.a` en el SDK instalado.
 - PCSX2 v2.9.74 ejecuta el harness diferencial de forma headless. El ELF emite
-  `VU1_DIFFERENTIAL_PASS` por SIO y el runner devuelve 0 tras comparar bit a bit
-  la memoria VU1 de ambas rutas y comprobar además los valores esperados. Esto
-  valida esa fixture concreta; no establece equivalencia con Sony ni rendimiento.
+  `VU1_DIFFERENTIAL_PASS rows=4` por el `stdout` normal de PS2SDK (`tty0:`) y el
+  runner devuelve 0 tras comparar bit a bit la memoria VU1 de ambas rutas y
+  comprobar además los valores esperados. Esto valida esa fixture concreta; no
+  establece equivalencia con Sony ni rendimiento.
 - `test/ps2/vu1_differential/run_pcsx2.py` crea un `datapath` temporal, habilita
-  la consola EE en una copia de `PCSX2.ini`, reutiliza la ruta de BIOS existente
-  y termina PCSX2 al observar el marcador SIO, sin modificar la configuración
-  del usuario.
+  logging de consola system/EE/IOP en una copia de `PCSX2.ini`, reutiliza la ruta
+  de BIOS existente y termina PCSX2 al observar el marcador de `stdout`, sin
+  modificar la configuración del usuario. `EnableIOPConsole` es necesario para
+  hacer visible `tty0:`; no hacen falta llamadas `sio_puts` en el ELF.
 - `general_quad` se ha observado también en PCSX2 usando `box.elf`, comparando
   OpenVCL puro con el VSM Sony. El fallo histórico **sigue presente**: la ruta
   OpenVCL por defecto produce una iluminación/color claramente más oscura. Como
@@ -151,17 +153,29 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    modela esperas Q/P. `tools/analyze_ps2gl_no_q_rewrites.py` muestra que los
    18 rewrites no-Q aceptados tienen una diferencia de hasta **4 ciclos** entre
    el `bestCycles` usado por el selector aislado y las filas del bucle realmente
-   emitido hasta su delay slot. El nuevo diagnóstico `bestCyclesInContext`, que
-   conserva el estado del prólogo al estimar el main pero **no cambia la
-   selección**, reduce ese error máximo a **1 ciclo** en el corpus. En `general`,
-   `dir_light_vert_loop_lid` pasa de 63 ciclos baseline a 46 previstos aislados,
-   50 in-context y 50 emitidos; para `final_loop_lid`, 13 -> 7 -> 10 -> 11.
-   Además, el bloque textual
-   de `VsmCostAnalyzer` añade **6 ciclos de cola de salida** después del backedge
-   en estos casos (50 -> 56 y 11 -> 17), y el preset los pondera junto con el
-   loop. Por tanto, 56/17 siguen siendo útiles como coste estructural histórico,
-   pero no son el II steady-state exacto. Ninguna de estas cifras demuestra
-   ausencia de hazards ni equivale a tiempo real de PS2.
+   emitido hasta su delay slot. El diagnóstico `bestCyclesInContext`, que conserva
+   el estado del prólogo al estimar el main pero **no cambia la selección**, reduce
+   ese error máximo a **1 ciclo** en el corpus.
+   El ciclo residual ya está localizado con más precisión. Los **18/18** rewrites
+   marcan el último token del prefijo como movible al delay slot y aplican una
+   rebaja uniforme de un ciclo. Antes de esa rebaja, el coste in-context coincide
+   con las filas emitidas en **11/18** casos; después de aplicarla coincide en los
+   otros **7/18**. Por tanto `prefixInBranchDelay` no basta por sí solo para inferir
+   un descuento de un ciclo en esta métrica. En `general`,
+   `dir_light_vert_loop_lid` da 63 baseline -> 46 selector -> 51 context raw ->
+   50 context descontado -> 50 emitido, mientras `final_loop_lid` da
+   13 -> 7 -> 11 -> 10 -> 11. Se exponen ahora `bestCyclesInContextRaw` y
+   `branchDelayDiscount` para separar ambos efectos; siguen siendo diagnóstico y
+   no un gate de scheduling.
+   Además, el analizador separa explícitamente `steady_state_static_cycles` de
+   `fallthrough_tail_static_cycles`. En los 18 casos la partición reconstruye
+   exactamente el bloque estático de `VsmCostAnalyzer` (error máximo **0**); la
+   cola de salida máxima es **6 ciclos** y explica 50 -> 56 y 11 -> 17. El preset
+   histórico sigue ponderando el bloque textual completo, incluida esa cola de
+   una sola ejecución, de modo que 56/17 y los agregados ponderados de arriba son
+   útiles como línea base histórica pero **no son coste steady-state por
+   iteración**. Ninguna de estas cifras demuestra ausencia de hazards ni equivale
+   a tiempo real de PS2.
 6. **Detección de instrucciones desconocidas corregida.** El parser de costes
    consume los slots según el número de operandos descrito por
    `VuInstructionInfo`, acepta etiquetas inline y expresiones con espacios, y
@@ -205,12 +219,13 @@ resumidos; para reproducirlos en otra máquina ejecutar de nuevo las herramienta
 ## Siguiente hito
 
 Completar fase 1 antes de promover cambios de scheduling: el harness diferencial
-ya tiene ejecución runtime automatizada en PCSX2, pero el smoke test de
-`general_quad` confirma que todavía existe una discrepancia semántica en alguna
-rewrite genérica. El siguiente trabajo no invasivo es explicar el ciclo residual
-de `final_loop_lid`, separar la cola de salida del coste steady-state de loops y
-después aislar la clase de rewrite responsable del fallo de `general_quad` con un
-oráculo reproducible de memoria/paquetes, no solo con capturas.
+ya tiene ejecución runtime automatizada en PCSX2, el ciclo residual y la cola de
+salida ya están caracterizados, pero el smoke test de `general_quad` confirma que
+todavía existe una discrepancia semántica en alguna rewrite genérica. El siguiente
+trabajo debe aislar la clase de rewrite responsable con un oráculo reproducible de
+memoria/paquetes, no solo con capturas, y después corregir la ponderación del
+cost-model para que una cola fallthrough de una ejecución no se multiplique por el
+número de iteraciones.
 `bestCyclesInContext` queda por ahora estrictamente diagnóstico: no usarlo como
 gate hasta cerrar ese oráculo runtime. No usar nombres de shaders para tomar
 decisiones.

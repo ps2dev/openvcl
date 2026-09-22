@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Characterize accepted generic no-Q cyclic-prefix rewrites in the ps2gl corpus.
 
-The report deliberately separates three quantities:
+The report deliberately separates four quantities:
   * selector baseline/best cycles reported by OpenVCL while choosing a rewrite;
+  * the diagnostic in-context selector estimate;
   * rows in the emitted VSM steady-state loop through its branch delay slot;
-  * VsmCostAnalyzer label-block cycles, which may include loop-exit fallthrough.
+  * loop-exit fallthrough rows that share the same textual VSM label block.
+
+VsmCostAnalyzer label blocks are also reported explicitly as static and estimated
+cycles. They are intentionally not called steady-state costs: a label block can
+contain both the repeated backedge path and one-shot fallthrough after the delay
+slot.
 
 These are static diagnostics only. They are not PS2 runtime timings or a semantic
 correctness oracle.
@@ -32,6 +38,9 @@ TRACE_START = re.compile(
 TRACE_RESULT = re.compile(
     r"\[cyclic-prefix-trace\] loop=(\S+) result=(ACCEPTED|no_improvement) "
     r"bestCycles=(\d+)(?: bestCyclesInContext=(\d+))?"
+    r"(?: bestCyclesInContextRaw=(\d+))?"
+    r"(?: branchDelayDiscount=(\d+))?"
+    r"(?: prefixInBranchDelay=(\d+))?"
 )
 
 
@@ -68,11 +77,31 @@ def parse_accepted(stderr):
             "selector_best_cycles_in_context": (
                 int(match.group(4)) if match.group(4) is not None else None
             ),
+            "selector_best_cycles_in_context_raw": (
+                int(match.group(5)) if match.group(5) is not None else None
+            ),
+            "selector_branch_delay_discount": (
+                int(match.group(6)) if match.group(6) is not None else None
+            ),
+            "selector_prefix_in_branch_delay": (
+                bool(int(match.group(7))) if match.group(7) is not None else None
+            ),
         }
     return accepted
 
 
-def emitted_loop_cycles(vsm_text, label):
+def is_issue_line(line):
+    stripped = line.strip()
+    return bool(
+        stripped
+        and not stripped.endswith(":")
+        and not stripped.startswith(".")
+        and not stripped.startswith(";")
+        and not stripped.startswith("#")
+    )
+
+
+def emitted_loop_region(vsm_text, label):
     lines = vsm_text.splitlines()
     start = next((i for i, line in enumerate(lines) if line.strip() == label + ":"), None)
     if start is None:
@@ -83,22 +112,50 @@ def emitted_loop_cycles(vsm_text, label):
         + re.escape(label)
         + r"\b"
     )
+    issue_count = 0
+    branch_issue = None
+    delay_issue = None
     for index in range(start + 1, len(lines)):
         stripped = lines[index].strip()
         if index > start + 1 and stripped.endswith(":") and not lines[index][:1].isspace():
-            return None
-        if branch_re.search(lines[index]):
-            # The label itself consumes no cycle. Include the branch and its
-            # architectural one-cycle delay slot.
-            return (index - start) + 1
-    return None
+            break
+        if not is_issue_line(lines[index]):
+            continue
+        issue_count += 1
+        if branch_issue is None and branch_re.search(lines[index]):
+            branch_issue = issue_count
+            continue
+        if branch_issue is not None and delay_issue is None:
+            delay_issue = issue_count
+
+    if branch_issue is None or delay_issue is None:
+        return None
+
+    # VU backedges have one architectural delay slot. The repeated path is the
+    # label through that slot; subsequent rows in the same textual label block
+    # are one-shot fallthrough and must not be multiplied by the loop repeat.
+    return {
+        "steady_state_static_cycles": delay_issue,
+        "fallthrough_tail_static_cycles": issue_count - delay_issue,
+        "label_block_static_cycles_from_vsm": issue_count,
+        "backedge_static_cycle": branch_issue,
+    }
 
 
-def label_block_cycles(cost, label):
+def label_block_cost(cost, label):
     for block in cost.get("blocks", []):
         if block.get("label") == label:
-            return block.get("estimated_cycles", block.get("cycles"))
-    return None
+            return {
+                "static": block.get("cycles"),
+                "estimated": block.get("estimated_cycles", block.get("cycles")),
+            }
+    for block_label, block in cost.get("cost_by_label", {}).items():
+        if block_label == label:
+            return {
+                "static": block.get("static_cycles"),
+                "estimated": block.get("estimated_cycles", block.get("static_cycles")),
+            }
+    return {"static": None, "estimated": None}
 
 
 def main():
@@ -148,18 +205,27 @@ def main():
             vsm_text = vsm.read_text()
 
             for label in sorted(accepted):
+                region = emitted_loop_region(vsm_text, label)
+                block_cost = label_block_cost(cost, label)
                 row = {
                     "renderer": renderer,
                     "loop": label,
                     **accepted[label],
-                    "emitted_loop_cycles_through_delay": emitted_loop_cycles(vsm_text, label),
-                    "cost_label_block_cycles": label_block_cycles(cost, label),
+                    **(region or {
+                        "steady_state_static_cycles": None,
+                        "fallthrough_tail_static_cycles": None,
+                        "label_block_static_cycles_from_vsm": None,
+                        "backedge_static_cycle": None,
+                    }),
+                    "cost_label_block_static_cycles": block_cost["static"],
+                    "cost_label_block_estimated_cycles": block_cost["estimated"],
                 }
                 baseline_cycles = row["selector_baseline_cycles"]
                 best_cycles = row["selector_best_cycles"]
                 context_cycles = row["selector_best_cycles_in_context"]
-                emitted_cycles = row["emitted_loop_cycles_through_delay"]
-                block_cycles = row["cost_label_block_cycles"]
+                context_cycles_raw = row["selector_best_cycles_in_context_raw"]
+                emitted_cycles = row["steady_state_static_cycles"]
+                block_static_cycles = row["cost_label_block_static_cycles"]
                 row["selector_gain_cycles"] = (
                     baseline_cycles - best_cycles
                     if baseline_cycles is not None and best_cycles is not None
@@ -175,9 +241,18 @@ def main():
                     if emitted_cycles is not None and context_cycles is not None
                     else None
                 )
-                row["label_block_exit_tail_cycles"] = (
-                    block_cycles - emitted_cycles
-                    if block_cycles is not None and emitted_cycles is not None
+                row["emission_gap_vs_selector_context_raw"] = (
+                    emitted_cycles - context_cycles_raw
+                    if emitted_cycles is not None and context_cycles_raw is not None
+                    else None
+                )
+                row["label_block_static_partition_error"] = (
+                    block_static_cycles
+                    - row["steady_state_static_cycles"]
+                    - row["fallthrough_tail_static_cycles"]
+                    if block_static_cycles is not None
+                    and row["steady_state_static_cycles"] is not None
+                    and row["fallthrough_tail_static_cycles"] is not None
                     else None
                 )
                 rows.append(row)
@@ -192,6 +267,26 @@ def main():
         "accepted_no_q_rewrites": rows,
         "summary": {
             "count": len(rows),
+            "prefix_in_branch_delay_count": sum(
+                1 for r in rows if r["selector_prefix_in_branch_delay"] is True
+            ),
+            "branch_delay_discount_count": sum(
+                1 for r in rows if r["selector_branch_delay_discount"] not in (None, 0)
+            ),
+            "raw_context_matches_emitted_count": sum(
+                1 for r in rows if r["emission_gap_vs_selector_context_raw"] == 0
+            ),
+            "discounted_context_matches_emitted_count": sum(
+                1 for r in rows if r["emission_gap_vs_selector_context"] == 0
+            ),
+            "nonzero_context_gap_count": sum(
+                1 for r in rows if r["emission_gap_vs_selector_context"] not in (None, 0)
+            ),
+            "nonzero_context_gap_with_prefix_in_branch_delay_count": sum(
+                1 for r in rows
+                if r["emission_gap_vs_selector_context"] not in (None, 0)
+                and r["selector_prefix_in_branch_delay"] is True
+            ),
             "max_emission_gap_vs_selector_best": max(
                 (r["emission_gap_vs_selector_best"] for r in rows
                  if r["emission_gap_vs_selector_best"] is not None),
@@ -202,9 +297,19 @@ def main():
                  if r["emission_gap_vs_selector_context"] is not None),
                 default=0,
             ),
-            "max_label_block_exit_tail_cycles": max(
-                (r["label_block_exit_tail_cycles"] for r in rows
-                 if r["label_block_exit_tail_cycles"] is not None),
+            "max_emission_gap_vs_selector_context_raw": max(
+                (abs(r["emission_gap_vs_selector_context_raw"]) for r in rows
+                 if r["emission_gap_vs_selector_context_raw"] is not None),
+                default=0,
+            ),
+            "max_fallthrough_tail_static_cycles": max(
+                (r["fallthrough_tail_static_cycles"] for r in rows
+                 if r["fallthrough_tail_static_cycles"] is not None),
+                default=0,
+            ),
+            "max_label_block_static_partition_error": max(
+                (abs(r["label_block_static_partition_error"]) for r in rows
+                 if r["label_block_static_partition_error"] is not None),
                 default=0,
             ),
         },

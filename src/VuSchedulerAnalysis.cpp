@@ -4076,7 +4076,7 @@ namespace
 		return totalCycles >= prologCycles ? totalCycles - prologCycles : 0;
 	}
 
-	unsigned int multiQPipelineCandidateMainCyclesInContext(
+	unsigned int multiQPipelineCandidateMainCyclesInContextRaw(
 	    const VuLoopPipelineOpportunity& candidate,
 	    const std::vector<const Token*>& indexedTokens )
 	{
@@ -4093,7 +4093,15 @@ namespace
 		appendMultiQPipelineCandidateMainForScheduleCost( combinedTokens, candidate, indexedTokens );
 		const unsigned int totalCycles =
 		    scheduleVuProgramReadyIssueSlotsWithFlagLiveness( combinedTokens ).cycleCount;
-		unsigned int mainCycles = totalCycles >= prologCycles ? totalCycles - prologCycles : 0;
+		return totalCycles >= prologCycles ? totalCycles - prologCycles : 0;
+	}
+
+	unsigned int multiQPipelineCandidateMainCyclesInContext(
+	    const VuLoopPipelineOpportunity& candidate,
+	    const std::vector<const Token*>& indexedTokens )
+	{
+		unsigned int mainCycles = multiQPipelineCandidateMainCyclesInContextRaw( candidate,
+		                                                                         indexedTokens );
 		if( candidate.multiQCyclicPrefixLastTokenInBranchDelaySlot && mainCycles > 0 )
 			--mainCycles;
 		return mainCycles;
@@ -4531,13 +4539,25 @@ namespace
 
 		if( dumpRejections )
 		{
+			const unsigned int bestCyclesInContextRaw = found
+			    ? multiQPipelineCandidateMainCyclesInContextRaw( bestCandidate, indexedTokens )
+			    : bestCycles;
 			const unsigned int bestCyclesInContext = found
 			    ? multiQPipelineCandidateMainCyclesInContext( bestCandidate, indexedTokens )
 			    : bestCycles;
+			const unsigned int branchDelayDiscount =
+			    bestCyclesInContextRaw >= bestCyclesInContext
+			    ? bestCyclesInContextRaw - bestCyclesInContext
+			    : 0;
 			std::cerr << "[cyclic-prefix-trace] loop=" << loop.label
 			          << " result=" << ( found ? "ACCEPTED" : "no_improvement" )
 			          << " bestCycles=" << bestCycles
-			          << " bestCyclesInContext=" << bestCyclesInContext << "\n";
+			          << " bestCyclesInContext=" << bestCyclesInContext
+			          << " bestCyclesInContextRaw=" << bestCyclesInContextRaw
+			          << " branchDelayDiscount=" << branchDelayDiscount
+			          << " prefixInBranchDelay="
+			          << ( found && bestCandidate.multiQCyclicPrefixLastTokenInBranchDelaySlot ? 1 : 0 )
+			          << "\n";
 		}
 
 		if( !found )

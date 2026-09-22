@@ -18,8 +18,9 @@
   including loops with no Q producer, while leaving pipeline eligibility and
   emitted code unchanged.
 - Added a ps2gl no-Q rewrite diagnostic that separates cyclic-prefix selector
-  estimates, emitted steady-state loop rows, and label-block cost so planner /
-  emitter and loop-exit accounting gaps can be measured reproducibly.
+  estimates (including raw vs branch-delay-discounted in-context cost), emitted
+  steady-state loop rows, one-shot fallthrough tail rows, and label-block cost
+  so planner / emitter and loop-exit accounting gaps can be measured reproducibly.
 - Cyclic-prefix tracing now also reports an in-context main-loop estimate that
   carries prolog scheduling state into the main body without changing rewrite
   selection or emitted code.

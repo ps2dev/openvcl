@@ -72,11 +72,16 @@ python3 tools/analyze_ps2gl_no_q_rewrites.py \
 ```
 
 The report separates the cyclic-prefix selector's isolated baseline/best cycle
-estimate, its diagnostic prolog-to-main in-context estimate, the number of
-emitted steady-state VSM rows through the branch delay slot, and the label-block
-cost reported by `VsmCostAnalyzer`. Differences are useful for finding
-planner/emitter and block-accounting mismatches, but none of these values are
-PS2 runtime measurements or semantic-equivalence evidence.
+estimate, its diagnostic prolog-to-main in-context estimate before and after the
+branch-delay discount, the emitted steady-state VSM rows through the backedge
+delay slot, and the one-shot fallthrough rows that happen to share the same
+textual label block. It also reports the `VsmCostAnalyzer` label block as
+separate static and estimated cycles and checks that
+`steady_state + fallthrough_tail == label_block_static`.
+`selector_prefix_in_branch_delay` and `selector_branch_delay_discount` make the
+selector's branch-delay heuristic explicit when investigating residual
+planner/emitter gaps. None of these values are PS2 runtime measurements or
+semantic-equivalence evidence.
 
 Check label independence against a completed baseline:
 
