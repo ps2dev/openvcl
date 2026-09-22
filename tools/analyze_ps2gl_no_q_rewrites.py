@@ -36,7 +36,7 @@ TRACE_START = re.compile(
     r"\[cyclic-prefix-trace\] loop=(\S+) branchOffset=(\d+) baselineCycles=(\d+)"
 )
 TRACE_RESULT = re.compile(
-    r"\[cyclic-prefix-trace\] loop=(\S+) result=(ACCEPTED|no_improvement) "
+    r"\[cyclic-prefix-trace\] loop=(\S+) result=(ACCEPTED|no_improvement|no_estimated_main_improvement) "
     r"bestCycles=(\d+)(?: bestCyclesInContext=(\d+))?"
     r"(?: bestCyclesInContextRaw=(\d+))?"
     r"(?: branchDelayDiscount=(\d+))?"

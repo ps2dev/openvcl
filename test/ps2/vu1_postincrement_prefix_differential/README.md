@@ -4,8 +4,10 @@ This fixture validates the narrow multi-Q transformation where a postincrement
 load belongs to the cyclic prefix and its base register is also the loop
 branch induction variable.
 
-The normal candidate keeps the original `LQI (...++)` in the prolog. In
-steady state it must:
+The candidate build disables only the generic profitability gate so this
+semantic fixture keeps exercising the transformation even when its synthetic
+loop is not selected by the default cost policy. It keeps the original
+`LQI (...++)` in the prolog. In steady state it must:
 
 1. guard the speculative next-iteration prefix with the inverted loop branch;
 2. replace the cloned `LQI` with a plain `LQ 0(base)`, so the prefetch has
@@ -13,6 +15,8 @@ steady state it must:
 3. execute `iaddiu base, base, 1` in the original loop branch delay slot.
 
 The no-pipeline baseline executes the original `LQI` once per iteration.
+The profitability bypass is diagnostic/test-only; normal compilation keeps the
+gate enabled.
 
 The EE harness runs both versions with trip counts 1, 2, and 4. Before every
 run it restores identical VU1 data memory, then compares all eight output

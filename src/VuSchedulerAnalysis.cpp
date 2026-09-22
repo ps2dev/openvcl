@@ -4836,7 +4836,9 @@ namespace
 		if( originalTokenIndices.empty() )
 			return false;
 
-		unsigned int bestCycles = scheduledLoopBodyCycles( originalTokenIndices, indexedTokens );
+		const unsigned int baselineCycles =
+		    scheduledLoopBodyCycles( originalTokenIndices, indexedTokens );
+		unsigned int bestCycles = baselineCycles;
 		VuLoopPipelineOpportunity bestCandidate;
 		bool bestStartsWithStore = false;
 		bool found = false;
@@ -4946,20 +4948,30 @@ namespace
 			}
 		}
 
+		const unsigned int bestCyclesInContextRaw = found
+		    ? multiQPipelineCandidateMainCyclesInContextRaw( bestCandidate, indexedTokens )
+		    : bestCycles;
+		const unsigned int bestCyclesInContext = found
+		    ? multiQPipelineCandidateMainCyclesInContext( bestCandidate, indexedTokens )
+		    : bestCycles;
+		const bool profitabilityGateDisabled =
+		    std::getenv( "OPENVCL_DISABLE_PIPELINE_PROFITABILITY_GATE" ) != NULL;
+		const bool estimatedMainImproves =
+		    found && bestCyclesInContext < baselineCycles;
+
 		if( dumpRejections )
 		{
-			const unsigned int bestCyclesInContextRaw = found
-			    ? multiQPipelineCandidateMainCyclesInContextRaw( bestCandidate, indexedTokens )
-			    : bestCycles;
-			const unsigned int bestCyclesInContext = found
-			    ? multiQPipelineCandidateMainCyclesInContext( bestCandidate, indexedTokens )
-			    : bestCycles;
 			const unsigned int branchDelayDiscount =
 			    bestCyclesInContextRaw >= bestCyclesInContext
 			    ? bestCyclesInContextRaw - bestCyclesInContext
 			    : 0;
 			std::cerr << "[cyclic-prefix-trace] loop=" << loop.label
-			          << " result=" << ( found ? "ACCEPTED" : "no_improvement" )
+			          << " result="
+			          << ( !found
+			               ? "no_improvement"
+			               : (estimatedMainImproves || profitabilityGateDisabled
+			                  ? "ACCEPTED"
+			                  : "no_estimated_main_improvement") )
 			          << " bestCycles=" << bestCycles
 			          << " bestCyclesInContext=" << bestCyclesInContext
 			          << " bestCyclesInContextRaw=" << bestCyclesInContextRaw
@@ -4970,6 +4982,15 @@ namespace
 		}
 
 		if( !found )
+			return false;
+
+		/*
+		 * The isolated candidate score is useful for search, but the emitted main
+		 * inherits long-latency state from its prolog. A rewrite whose in-context
+		 * steady-state estimate does not strictly improve the original loop cannot
+		 * recover its one-shot prolog/drain cost for any trip count.
+		 */
+		if( !profitabilityGateDisabled && !estimatedMainImproves )
 			return false;
 
 		plan.label = loop.label;
@@ -5243,6 +5264,11 @@ namespace
 			addMultiQPipelineBlocker( opportunity, "insufficient_q_insertion_gap" );
 		if( opportunity.qLiveOut )
 			addMultiQPipelineBlocker( opportunity, "q_live_out" );
+		if( std::getenv( "OPENVCL_DISABLE_PIPELINE_PROFITABILITY_GATE" ) == NULL
+		    && opportunity.hasMultiQProfitabilityEstimate
+		    && opportunity.multiQCandidateMainInContextEstimatedCycles
+		       >= opportunity.multiQOriginalMainEstimatedCycles )
+			addMultiQPipelineBlocker( opportunity, "no_estimated_main_improvement" );
 		if( tokenIndicesHaveUnsafeMultiQCyclicPrefixSideEffects( opportunity.multiQCyclicPrefixTokenIndices,
 		                                                         indexedTokens,
 		                                                         opportunity.multiQCyclicPrefixNeedsGuard ) )
@@ -6257,6 +6283,9 @@ VuLoopPipelineOpportunity::VuLoopPipelineOpportunity()
 	multiQCyclicPrefixLastTokenInBranchDelaySlot = false;
 	multiQCyclicPrefixDefersPostIncrement = false;
 	multiQCyclicPrefixPostIncrementTokenIndex = VU_SCHEDULED_TOKEN_INDEX_NONE;
+	hasMultiQProfitabilityEstimate = false;
+	multiQOriginalMainEstimatedCycles = 0;
+	multiQCandidateMainInContextEstimatedCycles = 0;
 	memoryLoadCount = 0;
 	memoryStoreCount = 0;
 	hasMemoryPreOrPostIncrement = false;
@@ -8934,6 +8963,20 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 			}
 			if( foundSafeCyclicPrefix )
 			{
+				std::vector<unsigned int> originalMultiQTokenIndices;
+				appendPipelineInstructionIndices( *loop,
+				                                  0,
+				                                  branchOffset + 1,
+				                                  originalMultiQTokenIndices );
+				opportunity.hasMultiQProfitabilityEstimate =
+				    !originalMultiQTokenIndices.empty();
+				if( opportunity.hasMultiQProfitabilityEstimate )
+				{
+					opportunity.multiQOriginalMainEstimatedCycles =
+					    scheduledLoopBodyCycles( originalMultiQTokenIndices, indexedTokens );
+					opportunity.multiQCandidateMainInContextEstimatedCycles =
+					    multiQPipelineCandidateMainCyclesInContext( bestOpportunity, indexedTokens );
+				}
 				opportunity.multiQPrologTokenIndices = bestOpportunity.multiQPrologTokenIndices;
 				opportunity.multiQMainTokenIndices = bestOpportunity.multiQMainTokenIndices;
 				opportunity.multiQCyclicPrefixTokenIndices = bestOpportunity.multiQCyclicPrefixTokenIndices;

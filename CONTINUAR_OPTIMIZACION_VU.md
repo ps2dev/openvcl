@@ -43,8 +43,7 @@ tienen runtime reproducible en PCSX2. El bloqueo global
 la primera iteración pelada hace ahora el handoff de las rotaciones cyclic-prefix
 antes de consumirlas. `general_quad` pasa de nuevo 12/12 frames contra Sony con
 el rewrite activo. `read_write_memory_stream_conflict` sigue protegiendo streams
-load/store con la misma base. No convertir aún la métrica nueva en gate.
-Prohibidos atajos por
+load/store con la misma base. Prohibidos atajos por
 nombres, hashes o shaders conocidos. Distingue estimaciones de tiempos reales.
 
 La comprobación de alias de los suffix-store drains entiende ahora inducciones
@@ -83,13 +82,20 @@ a bit idénticos al baseline anterior y los 13 default siguen pasando invarianci
 de labels; solo cambia la métrica. El agregado default baja de 258325 a
 **242881**, no-pipeline de 297385 a **279565**, Sony permanece en 100870.
 
-La corrección descubre un caso de rentabilidad pendiente: `indexed` queda en
-**30686** default frente a **30558** no-pipeline. Su `xform_loop_lid` guardado
-emite 87 filas steady-state frente a 88, pero el estimador da 95 frente a 94
-por stalls, más 23 ciclos de prólogo y 6 de drain. No deshacer el soporte
-semántico: el diferencial PCSX2 sigue siendo válido. El siguiente trabajo debe
-ser cerrar un gate **general** de rentabilidad que compare coste estimado real
-del plan (steady-state + costes one-shot) frente al original sin usar nombres,
-hashes ni una constante de 100 iteraciones. Después retomar los 16 loops no-Q
+La regresión de rentabilidad ya está cerrada con un gate **general** y
+conservador: el selector multi-Q conserva su búsqueda por coste aislado, pero el
+plan solo se promueve si el main emitido en contexto de su prólogo tiene un coste
+estimado estrictamente menor que el loop original. Si el steady-state no mejora,
+ningún coste one-shot de prólogo/drain puede amortizarse para ningún trip count,
+por lo que no hace falta asumir 100 iteraciones ni conocer el nombre del shader.
+El dump expone `original_main_estimated_cycles` y
+`candidate_main_in_context_estimated_cycles`, y
+`OPENVCL_DISABLE_PIPELINE_PROFITABILITY_GATE=1` queda limitado a diagnósticos y
+fixtures semánticos. El corpus pasa de **242881** a **241331** ciclos ponderados
+default; `indexed` vuelve a **30558**, igual que no-pipeline, y los tres
+`general_nospec*` evitan también un rewrite cuyo main estimado era 77 frente a
+75. Los 13 renderers compilan/ensamblan, invariancia default pasa 13/13,
+`general_quad` sigue 12/12 contra Sony y el fixture postincrement sigue pasando
+1/2/4 iteraciones en PCSX2. El siguiente trabajo puede retomar los 16 loops no-Q
 con CFG no simple mediante soporte explícito multi-exit/nested-loop; no relajar
 `simpleCountedLoop` globalmente.

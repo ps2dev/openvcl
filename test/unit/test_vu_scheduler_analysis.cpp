@@ -13,12 +13,42 @@
 #include "../../src/VuSchedulingRules.h"
 #include "../../src/VuTokenResourceAccess.h"
 
+#include <cstdlib>
 #include <list>
 #include <string>
 #include <vector>
 
 namespace
 {
+    class ScopedEnvironmentVariable
+    {
+    public:
+        ScopedEnvironmentVariable(const char* name, const char* value)
+            : m_name(name), m_hadValue(false)
+        {
+            const char* oldValue = std::getenv(name);
+            if (oldValue)
+            {
+                m_hadValue = true;
+                m_oldValue = oldValue;
+            }
+            ::setenv(name, value, 1);
+        }
+
+        ~ScopedEnvironmentVariable()
+        {
+            if (m_hadValue)
+                ::setenv(m_name.c_str(), m_oldValue.c_str(), 1);
+            else
+                ::unsetenv(m_name.c_str());
+        }
+
+    private:
+        std::string m_name;
+        bool m_hadValue;
+        std::string m_oldValue;
+    };
+
     std::list<vcl::Operand> makeOperands()
     {
         std::list<vcl::Operand> ops;
@@ -1596,6 +1626,7 @@ TEST_CASE("VuSchedulerAnalysis: multi-Q stages contribute carried register sets"
 
 TEST_CASE("VuSchedulerAnalysis: multi-Q software pipeline can use producer-only cyclic prefixes")
 {
+    ScopedEnvironmentVariable profitabilityBypass("OPENVCL_DISABLE_PIPELINE_PROFITABILITY_GATE", "1");
     vcl::Error::ResetErrorCount();
     ParsedProgram program;
     REQUIRE(program.parse("loop_lid:"));
@@ -1752,6 +1783,7 @@ TEST_CASE("VuSchedulerAnalysis: multi-Q software pipeline can rotate producer-si
 
 TEST_CASE("VuSchedulerAnalysis: multi-Q cyclic prefixes can guard plain store side effects")
 {
+    ScopedEnvironmentVariable profitabilityBypass("OPENVCL_DISABLE_PIPELINE_PROFITABILITY_GATE", "1");
     vcl::Error::ResetErrorCount();
     ParsedProgram program;
     REQUIRE(program.parse("loop_lid:"));
@@ -1832,8 +1864,42 @@ TEST_CASE("VuSchedulerAnalysis: multi-Q cyclic prefixes can guard plain store si
     CHECK(storeCount == 1u);
 }
 
+TEST_CASE("VuSchedulerAnalysis: profitability gate rejects non-improving multi-Q prefixes")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("--LoopCS 1, 1"));
+    REQUIRE(program.parse("add.xyz vf02, vf00, vf00"));
+    REQUIRE(program.parse("sq.xyz vf02, 0(vi03)"));
+    REQUIRE(program.parse("div q, vf00[w], vf00[w]"));
+    REQUIRE(program.parse("mulq.xyz vf03, vf00, q"));
+    REQUIRE(program.parse("add.xyz vf20, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf21, vf00, vf00"));
+    REQUIRE(program.parse("div q, vf00[w], vf00[w]"));
+    REQUIRE(program.parse("mulq.xyz vf06, vf00, q"));
+    REQUIRE(program.parse("add.xyz vf22, vf00, vf00"));
+    REQUIRE(program.parse("iaddiu vi01, vi01, 1"));
+    REQUIRE(program.parse("iaddiu vi03, vi03, 1"));
+    REQUIRE(program.parse("ibne vi01, vi02, loop_lid"));
+
+    std::vector<vcl::VuLoopPipelineOpportunity> opportunities =
+        vcl::findVuLoopPipelineOpportunities(program.tokenizer.tokens());
+    REQUIRE(opportunities.size() == 1u);
+    CHECK(opportunities[0].hasMultiQSoftwarePipelinePlan);
+    CHECK(opportunities[0].hasMultiQProfitabilityEstimate);
+    CHECK(opportunities[0].multiQCandidateMainInContextEstimatedCycles
+          >= opportunities[0].multiQOriginalMainEstimatedCycles);
+    CHECK(!opportunities[0].canEmitMultiQSoftwarePipeline);
+    CHECK(hasString(opportunities[0].multiQSoftwarePipelineBlockers,
+                    "no_estimated_main_improvement"));
+
+    CHECK(vcl::buildVuSoftwarePipelineRewritePlans(program.tokenizer.tokens()).empty());
+}
+
 TEST_CASE("VuSchedulerAnalysis: guarded multi-Q prefixes defer branch postincrements")
 {
+    ScopedEnvironmentVariable profitabilityBypass("OPENVCL_DISABLE_PIPELINE_PROFITABILITY_GATE", "1");
     vcl::Error::ResetErrorCount();
     ParsedProgram program;
     REQUIRE(program.parse("loop_lid:"));

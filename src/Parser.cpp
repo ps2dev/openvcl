@@ -925,6 +925,12 @@ namespace
 			       << (i->multiQCyclicPrefixDefersPostIncrement
 			           ? i->multiQCyclicPrefixPostIncrementRegister
 			           : "-");
+			stream << " multi_q_profitability_estimate="
+			       << (i->hasMultiQProfitabilityEstimate ? "yes" : "no");
+			stream << " multi_q_original_main_estimated_cycles="
+			       << i->multiQOriginalMainEstimatedCycles;
+			stream << " multi_q_candidate_main_in_context_estimated_cycles="
+			       << i->multiQCandidateMainInContextEstimatedCycles;
 			stream << " multi_q_blockers=";
 			writeStringListText( stream, i->multiQSoftwarePipelineBlockers );
 			stream << " suffix_store_drain_blockers=";
@@ -1041,7 +1047,13 @@ namespace
 			                 opportunity.multiQCyclicPrefixDefersPostIncrement
 			                     ? opportunity.multiQCyclicPrefixPostIncrementRegister.c_str()
 			                     : "" );
-			stream << "\n";
+			stream << ",\n";
+			stream << "        \"profitability_estimate_available\": "
+			       << (opportunity.hasMultiQProfitabilityEstimate ? "true" : "false") << ",\n";
+			stream << "        \"original_main_estimated_cycles\": "
+			       << opportunity.multiQOriginalMainEstimatedCycles << ",\n";
+			stream << "        \"candidate_main_in_context_estimated_cycles\": "
+			       << opportunity.multiQCandidateMainInContextEstimatedCycles << "\n";
 			stream << "      },\n";
 			stream << "      \"rewrite_plan\": {\n";
 			stream << "        \"available\": " << (rewritePlan ? "true" : "false") << ",\n";

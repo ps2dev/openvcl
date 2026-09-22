@@ -17,7 +17,8 @@ pdk:
 $(EE_BIN): pdk
 
 candidate.vsm: $(SOURCE) $(OPENVCL)
-	sed 's/\.name vsmPostIncrementPrefix/.name vsmPostIncrementPrefixCandidate/' $< | $(OPENVCL) -o $@
+	sed 's/\.name vsmPostIncrementPrefix/.name vsmPostIncrementPrefixCandidate/' $< | \
+		OPENVCL_DISABLE_PIPELINE_PROFITABILITY_GATE=1 $(OPENVCL) -o $@
 
 baseline.vsm: $(SOURCE) $(OPENVCL)
 	sed 's/\.name vsmPostIncrementPrefix/.name vsmPostIncrementPrefixBaseline/' $< | $(OPENVCL) --disable-generic-software-pipelining -o $@

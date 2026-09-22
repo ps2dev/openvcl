@@ -233,12 +233,14 @@ Elegir las primeras optimizaciones por evidencia, no por el nombre del shader.
    No adelantar cargas más allá de entradas válidas ni duplicar stores,
    actualizaciones de punteros o efectos de `xgkick`.
 6. Evaluar rentabilidad con coste total, incluyendo arranque, salida, stalls y
-   tamaño. El criterio experimental actual basado en filas/ciclos estáticos
-   puede aceptar un main una fila más corto que, sin embargo, tenga mayor coste
-   estimado por esperas; `indexed/xform_loop_lid` es el repro actual. Para
-   tamaños desconocidos, usar una política general conservadora o selección por
-   tamaño con coste de la guarda incluido. El preset de 100 iteraciones sirve
-   para análisis del corpus, no debe convertirse en una constante de codegen.
+   tamaño. El selector multi-Q aplica ya una condición necesaria conservadora:
+   tras elegir el mejor candidato por coste aislado, su main estimado en contexto
+   del prólogo debe mejorar estrictamente el loop original. Si el steady-state no
+   mejora, ningún coste one-shot de prólogo/drain puede amortizarse para ningún
+   trip count. Para tamaños desconocidos, mantener esta política general o añadir
+   selección explícita por tamaño con coste de la guarda incluido. El preset de
+   100 iteraciones sirve para análisis del corpus, no debe convertirse en una
+   constante de codegen.
 7. Ampliar cobertura incrementalmente: cadenas Q múltiples, P/EFU, aliasing
    afín demostrable y bucles más complejos, únicamente si los diagnósticos
    muestran que justifican el trabajo. El primer caso seguro de autoincremento

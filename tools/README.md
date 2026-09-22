@@ -176,8 +176,13 @@ Predecrement, multiple incrementing accesses, and later base reads remain blocke
 For scheduler isolation only, the following environment switches disable
 classes of rewrite without changing source shaders: `OPENVCL_DISABLE_MULTI_Q_SOFTWARE_PIPELINE`,
 `OPENVCL_DISABLE_NO_Q_CYCLIC_PREFIX`, `OPENVCL_DISABLE_NO_Q_LOOP_EXTRA_CYCLIC_PREFIX`,
-and `OPENVCL_DISABLE_NO_Q_PLAIN_CYCLIC_PREFIX`. They are diagnostic controls,
-not scheduling heuristics or supported optimization policy.
+and `OPENVCL_DISABLE_NO_Q_PLAIN_CYCLIC_PREFIX`.
+`OPENVCL_DISABLE_PIPELINE_PROFITABILITY_GATE=1` is a separate diagnostic escape
+hatch used by semantic fixtures when they must force an otherwise unprofitable
+multi-Q transformation. Normal compilation requires the candidate main,
+scheduled in prolog context, to have a strictly lower estimated cycle count than
+the original loop. These variables are diagnostic controls, not shader-specific
+scheduling heuristics or supported optimization policy.
 
 Do not rebuild the root OpenVCL binary while these scripts are running: CMake
 writes it into the source root even when using a separate build directory.

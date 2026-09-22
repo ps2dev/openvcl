@@ -11,6 +11,35 @@
 
 namespace
 {
+    class ScopedEnvironmentVariable
+    {
+    public:
+        ScopedEnvironmentVariable(const char* name, const char* value)
+            : m_name(name), m_hadValue(false)
+        {
+            const char* oldValue = std::getenv(name);
+            if (oldValue)
+            {
+                m_hadValue = true;
+                m_oldValue = oldValue;
+            }
+            ::setenv(name, value, 1);
+        }
+
+        ~ScopedEnvironmentVariable()
+        {
+            if (m_hadValue)
+                ::setenv(m_name.c_str(), m_oldValue.c_str(), 1);
+            else
+                ::unsetenv(m_name.c_str());
+        }
+
+    private:
+        std::string m_name;
+        bool m_hadValue;
+        std::string m_oldValue;
+    };
+
     bool contains(const std::string& haystack, const std::string& needle)
     {
         return haystack.find(needle) != std::string::npos;
@@ -1416,6 +1445,7 @@ TEST_CASE("Software pipeline: loaded generic multi-Q drains prime the prolog bra
 
 TEST_CASE("Software pipeline: generic path guards cloned multi-Q store prefixes")
 {
+    ScopedEnvironmentVariable profitabilityBypass("OPENVCL_DISABLE_PIPELINE_PROFITABILITY_GATE", "1");
     std::vector<std::string> args;
     args.push_back("--enable-generic-software-pipelining");
     std::string vsm = runEmitWithExtraArgs(genericMultiQGuardedStorePipelineSource(), args);
@@ -1433,6 +1463,20 @@ TEST_CASE("Software pipeline: generic path guards cloned multi-Q store prefixes"
                              "sq.xyz VF31, 0(VI03)",
                              "ibne VI01, VI02, loop_lid"));
     CHECK(!blockContains(vsm, "loop_lid__DRAIN", "sq.xyz VF31, 0(VI03)"));
+}
+
+TEST_CASE("Software pipeline: unprofitable guarded multi-Q prefixes stay scalar")
+{
+    std::vector<std::string> args;
+    args.push_back("--enable-generic-software-pipelining");
+    std::string vsm = runEmitWithExtraArgs(genericMultiQGuardedStorePipelineSource(), args);
+    REQUIRE(vsm.length() > 0);
+
+    CHECK(!contains(vsm, "loop_lid__PROLOG:"));
+    CHECK(!contains(vsm, "loop_lid__DRAIN:"));
+    CHECK(!contains(vsm, "loop_lid__DRAIN"));
+    CHECK(contains(vsm, "loop_lid:"));
+    CHECK(contains(vsm, "ibne VI01, VI02, loop_lid"));
 }
 
 TEST_CASE("Software pipeline: generic software-pipelining is default and can be disabled")

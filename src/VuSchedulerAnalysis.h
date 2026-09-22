@@ -318,6 +318,9 @@ struct VuLoopPipelineOpportunity
 	bool multiQCyclicPrefixDefersPostIncrement;
 	unsigned int multiQCyclicPrefixPostIncrementTokenIndex;
 	std::string multiQCyclicPrefixPostIncrementRegister;
+	bool hasMultiQProfitabilityEstimate;
+	unsigned int multiQOriginalMainEstimatedCycles;
+	unsigned int multiQCandidateMainInContextEstimatedCycles;
 	std::list<std::string> softwarePipelineBlockers;
 	std::list<std::string> multiQSoftwarePipelineBlockers;
 	std::list<std::string> suffixStoreDrainBlockers;

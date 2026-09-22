@@ -279,6 +279,13 @@ Ver `tools/README.md`. Todo está bajo la raíz de OpenVCL:
 - `build/label-invariance-postincrement-002/results.json`: los 13 renderers
   default conservan instrucciones equivalentes tras renombrar labels y todos
   ensamblan.
+- `build/baselines/profitability-gate-002/`: baseline completo tras activar el
+  gate de rentabilidad multi-Q; `metadata.json` marca `complete=true`, los 13
+  renderers ensamblan y el agregado default queda en **241331** ciclos estimados.
+- `build/label-invariance-profitability-gate-001/`: 13/13 checks default pasan
+  tras el gate.
+- `build/runtime/general-quad-oracle-profitability-gate-001/`: el renderer
+  `linear, quads` mantiene 12/12 frames semánticamente iguales a Sony en PCSX2.
 - `build-plan/Testing/Temporary/LastTest.log` y el equivalente en
   `../masp/build-plan/`: pruebas de las herramientas.
 
@@ -289,21 +296,29 @@ resumidos; para reproducirlos en otra máquina ejecutar de nuevo las herramienta
 
 Completar fase 1 antes de promover cambios de scheduling: el harness diferencial
 ya tiene ejecución runtime automatizada en PCSX2, el ciclo residual y la cola de
-salida ya están caracterizados, `general_quad` dispone de un oráculo
-determinista que coincide con Sony durante 12 frames y
-`indexed/xform_loop_lid` tiene ya un diferencial específico para el
-postincremento del prefijo. La ponderación de las colas fallthrough ya está
-corregida. Esa corrección hace visible un problema más inmediato que ampliar
-CFG: el rewrite de `indexed/xform_loop_lid` reduce una fila estática pero
-aumenta el coste steady-state estimado y añade prólogo/drain. El siguiente hito
-debe cerrar un gate general de rentabilidad basado en el coste estimado del plan
-completo frente al original, manteniendo el preset de 100 iteraciones solo como
-diagnóstico del corpus. Después abordar los 16 loops no-Q con CFG no simple
-mediante soporte explícito multi-exit/nested-loop. No eliminar
-`simpleCountedLoop` como atajo.
-`bestCyclesInContext` queda por ahora estrictamente diagnóstico: no usarlo como
-gate hasta que el modelo total de prólogo/main/drain esté cerrado. No usar nombres
-de shaders para tomar decisiones.
+salida están caracterizados, `general_quad` dispone de un oráculo determinista
+que coincide con Sony durante 12 frames y `indexed/xform_loop_lid` tiene un
+diferencial específico para el postincremento del prefijo. La ponderación de las
+colas fallthrough está corregida y el selector multi-Q ya aplica un gate general
+de rentabilidad: tras elegir el mejor candidato por coste aislado, compara el
+main estimado en contexto del prólogo con el loop original y rechaza
+`candidate >= original`. Es una condición necesaria independiente del trip
+count; un main que no mejora nunca puede amortizar prólogo/drain. No usa nombres,
+hashes ni el preset de 100 iteraciones.
+
+Con el gate, cuatro rewrites se rechazan en el corpus: `indexed/xform_loop_lid`
+(93 frente a 93 en el modelo interno actual) y los `pt_light_vert_loop_lid` de
+los tres `general_nospec*` (77 frente a 75). El agregado default baja de
+**242881** a **241331**; `indexed` queda en **30558**, igual que no-pipeline.
+Los 13 renderers compilan y ensamblan, invariancia default pasa 13/13,
+`general_quad` sigue 12/12 frente a Sony y el fixture postincrement pasa
+1/2/4 iteraciones. El escape
+`OPENVCL_DISABLE_PIPELINE_PROFITABILITY_GATE=1` existe solo para diagnóstico y
+fixtures que necesiten forzar la transformación semántica.
+
+El siguiente hito es abordar los 16 loops no-Q con CFG no simple mediante
+soporte explícito multi-exit/nested-loop. No eliminar `simpleCountedLoop` como
+atajo y no usar nombres de shaders para tomar decisiones.
 
 No alterar latencias de hardware ni habilitar un pase experimental para conseguir
 una tabla favorable. No considerar ensamblado, invariancia de nombres o capturas
