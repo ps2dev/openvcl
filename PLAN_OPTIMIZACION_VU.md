@@ -69,6 +69,10 @@ Los tres árboles estaban limpios al iniciar la revisión.
    `PS2GL_USE_SCE_VSM_FOR` contiene `general_quad` por defecto. Es obligatorio
    vaciarlo en la variante OpenVCL. Su comentario documenta un problema visual
    previo, cuya vigencia debe comprobarse, no darse por resuelta ni por actual.
+   La comprobación runtime determinista del 2026-09-22 (`tools/validate_ps2gl_general_quad.py`)
+   hace coincidir durante 12 frames OpenVCL actual, no-Q desactivado, pipeline
+   genérico desactivado y la referencia Sony en el estado VU1 semántico; la
+   discrepancia sugerida por capturas animadas no queda reproducida.
 5. **Hay 13 referencias, con una excepción de nombre.** Doce son
    `vu1/sce_<renderer>_vcl.vsm`; la de `scei` es `vu1/scei_vcl.vsm`.
 6. **El comparador no prueba equivalencia.** `cmake/vsm_diff.py` compara
@@ -313,7 +317,9 @@ con validación funcional continua desde fase 1. Dividir cada mejora en cambios
 revisables: repro y evidencia, regla general, pruebas y comparación completa.
 Mantener las rutas experimentales separadas hasta validarlas.
 
-El primer trabajo posterior debe producir la línea base pura de los 13 pares,
-confirmar el estado funcional de `general_quad` y ordenar los bloqueos por
-coste. Ese informe decidirá qué parte del planificador modular completar primero;
-no se fija todavía una promesa de mejora ni un calendario sin esas mediciones.
+La línea base pura de los 13 pares y el estado funcional determinista de
+`general_quad` ya están cubiertos. El trabajo posterior debe continuar cerrando
+la cobertura semántica general (aliasing/autoincremento y loops no cubiertos) y
+ordenar los bloqueos por coste. Ese informe decidirá qué parte del planificador
+modular completar primero; no se fija todavía una promesa de mejora ni un
+calendario sin esas mediciones.

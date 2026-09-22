@@ -65,15 +65,17 @@ rendimiento ni equivalencia funcional con Sony demostrada.**
   de BIOS existente y termina PCSX2 al observar el marcador de `stdout`, sin
   modificar la configuración del usuario. `EnableIOPConsole` es necesario para
   hacer visible `tty0:`; no hacen falta llamadas `sio_puts` en el ELF.
-- `general_quad` se ha observado también en PCSX2 usando `box.elf`, comparando
-  OpenVCL puro con el VSM Sony. El fallo histórico **sigue presente**: la ruta
-  OpenVCL por defecto produce una iluminación/color claramente más oscura. Como
-  diagnóstico adicional, un build OpenVCL con
-  `--disable-generic-software-pipelining` queda visualmente mucho más cerca de la
-  referencia Sony. Una medición de la región central de las capturas da
-  luminancia media aproximada 0.326 (OpenVCL actual), 0.507 (sin pipeline) y
-  0.524 (Sony). Son capturas de un ejemplo animado y por tanto sirven solo como
-  smoke test/aislamiento del fallo, no como prueba píxel a píxel de equivalencia.
+- La observación visual inicial de `general_quad` en `box.elf` sugería una imagen
+  más oscura con OpenVCL que con `--disable-generic-software-pipelining` o el VSM
+  Sony. Esa conclusión queda **superada por un oráculo runtime determinista**:
+  `tools/validate_ps2gl_general_quad.py` construye OpenVCL actual, no-Q
+  desactivado, todo el pipeline genérico desactivado y la referencia Sony, fuerza
+  el renderer `linear, quads` y ejecuta 12 frames con cámara/luces fijas por
+  secuencia. Los cuatro producen exactamente el mismo hash semántico de VU1 en
+  los 12 frames. La única diferencia de memoria completa está en qwords 4..8,
+  que contienen punteros EE/estado de transporte dependiente del layout del ELF;
+  qwords 0..3 y 9..1023 coinciden. Por tanto las capturas animadas anteriores no
+  constituyen evidencia de una regresión semántica actual de `general_quad`.
 
 ## Costes obtenidos
 
@@ -220,12 +222,12 @@ resumidos; para reproducirlos en otra máquina ejecutar de nuevo las herramienta
 
 Completar fase 1 antes de promover cambios de scheduling: el harness diferencial
 ya tiene ejecución runtime automatizada en PCSX2, el ciclo residual y la cola de
-salida ya están caracterizados, pero el smoke test de `general_quad` confirma que
-todavía existe una discrepancia semántica en alguna rewrite genérica. El siguiente
-trabajo debe aislar la clase de rewrite responsable con un oráculo reproducible de
-memoria/paquetes, no solo con capturas, y después corregir la ponderación del
-cost-model para que una cola fallthrough de una ejecución no se multiplique por el
-número de iteraciones.
+salida ya están caracterizados y `general_quad` dispone ahora de un oráculo
+determinista que coincide con Sony durante 12 frames. No queda reproducida la
+discrepancia semántica que sugerían las capturas animadas. El siguiente trabajo
+puede volver a cobertura general: aliasing/autoincremento, loops aún no cubiertos
+y, después, corregir la ponderación del cost-model para que una cola fallthrough
+de una ejecución no se multiplique por el número de iteraciones.
 `bestCyclesInContext` queda por ahora estrictamente diagnóstico: no usarlo como
 gate hasta cerrar ese oráculo runtime. No usar nombres de shaders para tomar
 decisiones.

@@ -15,10 +15,12 @@ no activarlo. No se ha optimizado todavía el compilador.
 
 Fase 1 en curso: el parser de costes estricto está corregido en `5516c71`;
 los 65 informes guardados conservan exactamente sus métricas. Existe
-`test/ps2/vu1_differential/`, un primer harness que compara memoria VU1 entre
-la ruta pipeline y `--disable-generic-software-pipelining`, y compila hasta ELF.
-Falta ejecutarlo: PS2Link no respondió en la última sesión y PCSX2 sigue sin
-control de escritorio. `general_quad` aún necesita comprobación funcional.
+`test/ps2/vu1_differential/`, cuyo ELF se ejecuta automáticamente en PCSX2 y
+compara memoria VU1 entre la ruta pipeline y
+`--disable-generic-software-pipelining`. `general_quad` dispone además de
+`tools/validate_ps2gl_general_quad.py`: 12 frames deterministas del renderer
+`linear, quads` coinciden en estado VU1 semántico entre OpenVCL actual, no-Q
+desactivado, pipeline genérico desactivado y Sony.
 El dump de loops publica 81 candidatos: **35 sin Q y 46 con Q**. La ruta
 cyclic-prefix ya acepta 18 de los no-Q. `tools/analyze_ps2gl_no_q_rewrites.py`
 ha revelado dos sesgos estáticos: hasta 4 ciclos entre el `bestCycles` aislado

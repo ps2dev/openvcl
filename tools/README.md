@@ -97,6 +97,30 @@ Recorded hashes reject mismatching compiler binaries or edited baseline inputs.
 This checks independence from label names; it does not prove correctness,
 independence from arbitrary source changes, or equivalence to Sony output.
 
+Validate the real ps2gl `general_quad` renderer in PCSX2 with deterministic
+camera/light transforms and a VU1-memory oracle:
+
+```sh
+python3 tools/validate_ps2gl_general_quad.py \
+  --ps2dev /Users/fjtrujy/toolchains/ps2/ps2dev \
+  --output build/runtime/general-quad-oracle-001
+```
+
+The validator builds four complete ps2gl variants: default OpenVCL, OpenVCL
+with no-Q cyclic-prefix rewrites disabled, OpenVCL with all generic software
+pipelining disabled, and the checked-in Sony VSM reference. It runs the same
+12 deterministic `linear, quads` frames in PCSX2 and compares a normalized VU1
+semantic hash. ps2gl qwords 4..8 contain EE pointers/transport-header state
+whose values depend on the linked ELF layout, so the oracle compares qwords
+0..3 and 9..1023 instead of hashing raw address-bearing state. A successful run
+prints `PS2GL_GENERAL_QUAD_PASS frames=12 variants=default,no-noq,no-pipeline,sce`.
+
+For scheduler isolation only, the following environment switches disable
+classes of rewrite without changing source shaders: `OPENVCL_DISABLE_MULTI_Q_SOFTWARE_PIPELINE`,
+`OPENVCL_DISABLE_NO_Q_CYCLIC_PREFIX`, `OPENVCL_DISABLE_NO_Q_LOOP_EXTRA_CYCLIC_PREFIX`,
+and `OPENVCL_DISABLE_NO_Q_PLAIN_CYCLIC_PREFIX`. They are diagnostic controls,
+not scheduling heuristics or supported optimization policy.
+
 Do not rebuild the root OpenVCL binary while these scripts are running: CMake
 writes it into the source root even when using a separate build directory.
 Keep the result directories outside version control; commit scripts and concise
