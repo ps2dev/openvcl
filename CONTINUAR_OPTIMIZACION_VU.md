@@ -22,7 +22,11 @@ compara memoria VU1 entre la ruta pipeline y
 `linear, quads` coinciden en estado VU1 semántico entre OpenVCL actual, no-Q
 desactivado, pipeline genérico desactivado y Sony.
 El dump de loops publica 81 candidatos: **35 sin Q y 46 con Q**. La ruta
-cyclic-prefix ya acepta 18 de los no-Q. `tools/analyze_ps2gl_no_q_rewrites.py`
+cyclic-prefix ya acepta **19** de los no-Q, incluido ahora
+`indexed/dir_light_vert_loop_lid`: su `SQI` postincrementado permanece fuera del
+prefijo clonado y un harness diferencial en PCSX2 valida salida bit a bit y
+puntero final (`pointer=36`). Los 16 no-Q restantes son no simples.
+`tools/analyze_ps2gl_no_q_rewrites.py`
 ha revelado dos sesgos estáticos: hasta 4 ciclos entre el `bestCycles` aislado
 del selector y el loop realmente emitido, y 6 ciclos de cola de salida que el
 coste por label atribuye al loop. El diagnóstico `bestCyclesInContext` conserva

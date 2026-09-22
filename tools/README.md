@@ -115,6 +115,21 @@ whose values depend on the linked ELF layout, so the oracle compares qwords
 0..3 and 9..1023 instead of hashing raw address-bearing state. A successful run
 prints `PS2GL_GENERAL_QUAD_PASS frames=12 variants=default,no-noq,no-pipeline,sce`.
 
+The separate VU1 autoincrement fixture checks the newly covered no-Q case where
+a postincrement store stays in the original loop suffix instead of being cloned:
+
+```sh
+make -C test/ps2/vu1_autoincrement_differential
+python3 test/ps2/vu1_differential/run_pcsx2.py \
+  --elf test/ps2/vu1_autoincrement_differential/vu1_autoincrement_differential.elf
+```
+
+It compares candidate and no-pipeline VU1 output bit-for-bit and checks the final
+postincremented pointer. The expected marker is
+`VU1_DIFFERENTIAL_PASS autoincrement rows=4 pointer=36`. This does not permit
+arbitrary pre/postincrement motion: such an instruction is still rejected when
+it would itself be part of the cloned cyclic prefix.
+
 For scheduler isolation only, the following environment switches disable
 classes of rewrite without changing source shaders: `OPENVCL_DISABLE_MULTI_Q_SOFTWARE_PIPELINE`,
 `OPENVCL_DISABLE_NO_Q_CYCLIC_PREFIX`, `OPENVCL_DISABLE_NO_Q_LOOP_EXTRA_CYCLIC_PREFIX`,

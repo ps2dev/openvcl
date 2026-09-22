@@ -4518,9 +4518,14 @@ namespace
 	                                          VuSoftwarePipelineRewritePlan& plan )
 	{
 		const bool hasLoopExtra = loopUsesLoopExtraDirective( loop, indexedTokens );
+		// Do not reject the whole loop merely because a memory instruction updates
+		// its base register.  A pre/postincrement inside the cloned prefix remains
+		// forbidden by tokenIndicesHaveUnsafeMultiQCyclicPrefixSideEffects(), and
+		// insertion-point legality prevents the prefix from crossing a dependent
+		// side effect.  This still permits a suffix SQI/LQI update that executes
+		// exactly once per original iteration.
 		if( !loop.simpleCountedLoop
 		    || loopBodyHasQProducer( loop )
-		    || loop.hasMemoryPreOrPostIncrement
 		    || loop.hasXgkick
 		    || loop.inductionRegisters.empty()
 		    || loop.branchTokenIndex >= indexedTokens.size()

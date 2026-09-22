@@ -136,10 +136,11 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    el bucle para el planner Q, pero `buildGenericCyclicPrefixRewritePlan` ya
    transforma un subconjunto de bucles simples. En los 13 VCL preprocesados de
    ps2gl aparecen **81 candidatos: 35 sin Q y 46 con Q**. De los 35 sin Q, la
-   ruta cyclic-prefix acepta actualmente **18 rewrites**: nueve
-   `dir_light_vert_loop_lid` y nueve `final_loop_lid`. El resto incluye bucles
-   no simples y los casos indexed con pre/post-incremento. No basta con mejorar
-   únicamente DIV/RSQRT.
+   ruta cyclic-prefix acepta actualmente **19 rewrites**: nueve
+   `dir_light_vert_loop_lid`, nueve `final_loop_lid` y el
+   `indexed/dir_light_vert_loop_lid` con `SQI` postincrementado. Los **16** no-Q
+   restantes son bucles no simples (`adcLoop_lid` y bucles exteriores de luces).
+   No basta con mejorar únicamente DIV/RSQRT.
 2. **Coste del renombrado.** Los logs de `fast` muestran 23 operaciones de
    kernel originales frente a 37 tras división/materialización; II 27 → 29.
    En `general`, 31 → 39 operaciones e II 36 → 38. Los gates rechazan esos
@@ -147,22 +148,29 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
 3. **Quads:** el diagnóstico de entrada de `xform_loop_lid` informa
    `multi_store_loaded_suffix_stream` y `read_write_memory_stream_conflict`.
    No quitar estas barreras sin una prueba de aliasing interiteración.
-4. **Indexed:** los rechazos incluyen `pre_or_post_increment_memory` y
-   `cyclic_prefix_side_effect`. Hace falta modelar explícitamente los efectos
-   de actualización de direcciones para ampliar cobertura con seguridad.
+4. **Indexed/autoincremento:** el rechazo global de cualquier pre/post-incremento
+   era demasiado conservador para `indexed/dir_light_vert_loop_lid`. El `SQI`
+   postincrementado permanece en el sufijo original y se ejecuta una sola vez;
+   el prefijo clonado se inserta después de esa actualización. Un harness VU1
+   diferencial en PCSX2 compara memoria bit a bit contra la ruta sin pipeline y
+   comprueba además el puntero final: `VU1_DIFFERENTIAL_PASS autoincrement
+   rows=4 pointer=36`. Los pre/post-incrementos dentro del propio prefijo clonado
+   siguen rechazados. Esto amplía cobertura semántica; el selector solo pasa de
+   63 a 62 ciclos aislados y el steady-state emitido mide 65 filas, por lo que
+   no se reclama una mejora de rendimiento runtime.
 5. **Límites del estimador y discrepancia planner/emisor cuantificada.** No
    recorre dinámicamente el CFG: pondera bloques de un recorrido textual y
    modela esperas Q/P. `tools/analyze_ps2gl_no_q_rewrites.py` muestra que los
-   18 rewrites no-Q aceptados tienen una diferencia de hasta **4 ciclos** entre
+   19 rewrites no-Q aceptados tienen una diferencia de hasta **4 ciclos** entre
    el `bestCycles` usado por el selector aislado y las filas del bucle realmente
    emitido hasta su delay slot. El diagnóstico `bestCyclesInContext`, que conserva
    el estado del prólogo al estimar el main pero **no cambia la selección**, reduce
    ese error máximo a **1 ciclo** en el corpus.
-   El ciclo residual ya está localizado con más precisión. Los **18/18** rewrites
+   El ciclo residual ya está localizado con más precisión. Los **19/19** rewrites
    marcan el último token del prefijo como movible al delay slot y aplican una
    rebaja uniforme de un ciclo. Antes de esa rebaja, el coste in-context coincide
-   con las filas emitidas en **11/18** casos; después de aplicarla coincide en los
-   otros **7/18**. Por tanto `prefixInBranchDelay` no basta por sí solo para inferir
+   con las filas emitidas en **11/19** casos; después de aplicarla coincide en los
+   otros **8/19**. Por tanto `prefixInBranchDelay` no basta por sí solo para inferir
    un descuento de un ciclo en esta métrica. En `general`,
    `dir_light_vert_loop_lid` da 63 baseline -> 46 selector -> 51 context raw ->
    50 context descontado -> 50 emitido, mientras `final_loop_lid` da
@@ -170,7 +178,7 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    `branchDelayDiscount` para separar ambos efectos; siguen siendo diagnóstico y
    no un gate de scheduling.
    Además, el analizador separa explícitamente `steady_state_static_cycles` de
-   `fallthrough_tail_static_cycles`. En los 18 casos la partición reconstruye
+   `fallthrough_tail_static_cycles`. En los 19 casos la partición reconstruye
    exactamente el bloque estático de `VsmCostAnalyzer` (error máximo **0**); la
    cola de salida máxima es **6 ciclos** y explica 50 -> 56 y 11 -> 17. El preset
    histórico sigue ponderando el bloque textual completo, incluida esa cola de
@@ -191,8 +199,9 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
 7. **Observabilidad de bucles sin Q añadida sin alterar codegen.** La nueva
    sección `loop_candidates` del dump JSON/texto publica forma del bucle,
    productores/consumidores Q, memoria, autoincrementos y XGKICK. La suite queda
-   en **424 casos**, y una recompilación de los **13 shaders** produce VSM
-   bit a bit idénticos a la baseline `default`.
+   en **428 casos**. Tras habilitar el caso seguro de autoincremento se recompilan
+   y ensamblan los **13 shaders**: solo cambia `indexed_vcl.vsm`; los otros 12
+   permanecen bit a bit idénticos a la baseline `default`.
 
 ## Artefactos locales y reproducción
 
@@ -210,7 +219,7 @@ Ver `tools/README.md`. Todo está bajo la raíz de OpenVCL:
 - `build/integration/{openvcl,sce}/examples/`: los seis ELF compilados;
   logs de compilación en `build/integration/{openvcl,sce}.log`.
 - `build/cost-audit/`: tres repros del parser de costes y sus JSON actuales.
-- `build/no-q-rewrites.json`: caracterización reproducible de los 18 rewrites
+- `build/no-q-rewrites.json`: caracterización reproducible de los 19 rewrites
   cyclic-prefix no-Q aceptados y de las diferencias selector/emisión/bloque.
 - `build-plan/Testing/Temporary/LastTest.log` y el equivalente en
   `../masp/build-plan/`: pruebas de las herramientas.

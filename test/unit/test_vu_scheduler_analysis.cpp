@@ -2134,6 +2134,90 @@ TEST_CASE("VuSchedulerAnalysis: no-Q cyclic prefixes can fill value-chain latenc
     CHECK(sawClonedLoadBeforeFirstMul);
 }
 
+TEST_CASE("VuSchedulerAnalysis: no-Q cyclic prefixes keep suffix postincrement stores single")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("iaddiu vi01, vi00, 0"));
+    REQUIRE(program.parse("iaddiu vi02, vi00, 32"));
+    REQUIRE(program.parse("iaddiu vi03, vi00, 12"));
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("--LoopCS 1, 3"));
+    REQUIRE(program.parse("lq.xyz vf31, 1(vi01)"));
+    REQUIRE(program.parse("mul.xyz vf30, vf19, vf31"));
+    REQUIRE(program.parse("adday.z acc, vf30, vf30"));
+    REQUIRE(program.parse("maddx.z vf30, vf12, vf30"));
+    REQUIRE(program.parse("maxx.z vf30, vf30, vf00"));
+    REQUIRE(program.parse("mulz.xyz vf29, vf14, vf30"));
+    REQUIRE(program.parse("mula.xyz acc, vf29, vf08"));
+    REQUIRE(program.parse("mul.xyz vf28, vf23, vf31"));
+    REQUIRE(program.parse("mr32.xyw vf28, vf28"));
+    REQUIRE(program.parse("addax.w acc, vf28, vf28"));
+    REQUIRE(program.parse("maddy.w vf31, vf00, vf28"));
+    REQUIRE(program.parse("maxx.w vf31, vf31, vf00"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("mul.w vf31, vf31, vf31"));
+    REQUIRE(program.parse("maddaw.xyz acc, vf17, vf31"));
+    REQUIRE(program.parse("madd.xyz vf16, vf13, vf06"));
+    REQUIRE(program.parse("lq.xyz vf21, 0(vi02)"));
+    REQUIRE(program.parse("add.xyz vf16, vf21, vf16"));
+    REQUIRE(program.parse("sqi.xyz vf16, (vi02++)"));
+    REQUIRE(program.parse("iaddiu vi01, vi01, 3"));
+    REQUIRE(program.parse("ibne vi01, vi03, loop_lid"));
+    REQUIRE(program.parse("nop"));
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans =
+        vcl::buildVuSoftwarePipelineRewritePlans(program.tokenizer.tokens());
+    REQUIRE(plans.size() == 1u);
+    CHECK(plans[0].label == "loop_lid");
+    CHECK(plans[0].cyclicPrefixBeforeBranch);
+
+    std::list<vcl::Token> transformed =
+        vcl::applyVuSoftwarePipelinePlans(program.tokenizer.tokens());
+
+    unsigned int postincrementStoreCount = 0;
+    for (std::list<vcl::Token>::const_iterator i = transformed.begin();
+         i != transformed.end(); ++i)
+    {
+        vcl::VuTokenResourceAccess access;
+        if (!vcl::buildVuTokenResourceAccess(*i, access))
+            continue;
+        if (access.memoryKind == vcl::VU_MEMORY_STORE
+            && (access.memoryFlags & vcl::VU_MEMORY_FLAG_POSTINC))
+            ++postincrementStoreCount;
+    }
+    CHECK(postincrementStoreCount == 1u);
+}
+
+TEST_CASE("VuSchedulerAnalysis: no-Q cyclic prefixes reject cloned postincrement side effects")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("iaddiu vi01, vi00, 0"));
+    REQUIRE(program.parse("iaddiu vi02, vi00, 32"));
+    REQUIRE(program.parse("iaddiu vi03, vi00, 12"));
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("--LoopCS 1, 3"));
+    REQUIRE(program.parse("sqi.xyz vf16, (vi02++)"));
+    REQUIRE(program.parse("lq.xyz vf31, 1(vi01)"));
+    REQUIRE(program.parse("mul.xyz vf30, vf19, vf31"));
+    REQUIRE(program.parse("mul.xyz vf29, vf30, vf30"));
+    REQUIRE(program.parse("mul.xyz vf28, vf29, vf29"));
+    REQUIRE(program.parse("mul.xyz vf27, vf28, vf28"));
+    REQUIRE(program.parse("mul.xyz vf26, vf27, vf27"));
+    REQUIRE(program.parse("add.xyz vf25, vf26, vf24"));
+    REQUIRE(program.parse("iaddiu vi01, vi01, 3"));
+    REQUIRE(program.parse("ibne vi01, vi03, loop_lid"));
+    REQUIRE(program.parse("nop"));
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans =
+        vcl::buildVuSoftwarePipelineRewritePlans(program.tokenizer.tokens());
+    CHECK(plans.empty());
+}
+
 TEST_CASE("VuSchedulerAnalysis: no-Q cyclic prefixes preserve live-out MAC flags")
 {
     vcl::Error::ResetErrorCount();

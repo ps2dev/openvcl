@@ -219,7 +219,11 @@ Elegir las primeras optimizaciones por evidencia, no por el nombre del shader.
    de la guarda incluido.
 7. Ampliar cobertura incrementalmente: cadenas Q múltiples, P/EFU, aliasing
    afín demostrable y bucles más complejos, únicamente si los diagnósticos
-   muestran que justifican el trabajo.
+   muestran que justifican el trabajo. El primer caso seguro de autoincremento
+   (`indexed/dir_light_vert_loop_lid`) ya está cubierto: el `SQI (...++)`
+   permanece en el sufijo original, fuera del prefijo clonado, y dispone de
+   validación diferencial runtime. No generalizar esto a actualizaciones que
+   formen parte del prefijo sin una prueba equivalente.
 
 **Entrega:** mejoras por categoría de bucle, cada una con casos positivos,
 negativos y diferenciales; fallback seguro cuando la transformación no es legal.
