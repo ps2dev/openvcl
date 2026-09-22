@@ -915,6 +915,16 @@ namespace
 			       << (i->multiQCyclicPrefixNeedsGuard ? "yes" : "no");
 			stream << " multi_q_cyclic_prefix_branch_delay="
 			       << (i->multiQCyclicPrefixLastTokenInBranchDelaySlot ? "yes" : "no");
+			stream << " multi_q_cyclic_prefix_defers_postincrement="
+			       << (i->multiQCyclicPrefixDefersPostIncrement ? "yes" : "no");
+			stream << " multi_q_cyclic_prefix_postincrement_token="
+			       << (i->multiQCyclicPrefixDefersPostIncrement
+			           ? i->multiQCyclicPrefixPostIncrementTokenIndex
+			           : 0);
+			stream << " multi_q_cyclic_prefix_postincrement_register="
+			       << (i->multiQCyclicPrefixDefersPostIncrement
+			           ? i->multiQCyclicPrefixPostIncrementRegister
+			           : "-");
 			stream << " multi_q_blockers=";
 			writeStringListText( stream, i->multiQSoftwarePipelineBlockers );
 			stream << " suffix_store_drain_blockers=";
@@ -1019,7 +1029,19 @@ namespace
 			stream << "        \"cyclic_prefix_guarded\": "
 			       << (opportunity.multiQCyclicPrefixNeedsGuard ? "true" : "false") << ",\n";
 			stream << "        \"cyclic_prefix_last_token_in_branch_delay_slot\": "
-			       << (opportunity.multiQCyclicPrefixLastTokenInBranchDelaySlot ? "true" : "false") << "\n";
+			       << (opportunity.multiQCyclicPrefixLastTokenInBranchDelaySlot ? "true" : "false") << ",\n";
+			stream << "        \"cyclic_prefix_defers_postincrement\": "
+			       << (opportunity.multiQCyclicPrefixDefersPostIncrement ? "true" : "false") << ",\n";
+			stream << "        \"cyclic_prefix_postincrement_token_index\": "
+			       << (opportunity.multiQCyclicPrefixDefersPostIncrement
+			           ? opportunity.multiQCyclicPrefixPostIncrementTokenIndex
+			           : 0) << ",\n";
+			stream << "        \"cyclic_prefix_postincrement_register\": ";
+			writeJsonString( stream,
+			                 opportunity.multiQCyclicPrefixDefersPostIncrement
+			                     ? opportunity.multiQCyclicPrefixPostIncrementRegister.c_str()
+			                     : "" );
+			stream << "\n";
 			stream << "      },\n";
 			stream << "      \"rewrite_plan\": {\n";
 			stream << "        \"available\": " << (rewritePlan ? "true" : "false") << ",\n";
@@ -1034,6 +1056,18 @@ namespace
 			       << (rewritePlan && rewritePlan->cyclicPrefixNeedsGuard ? "true" : "false") << ",\n";
 			stream << "        \"cyclic_prefix_last_token_in_branch_delay_slot\": "
 			       << (rewritePlan && rewritePlan->cyclicPrefixLastTokenInBranchDelaySlot ? "true" : "false") << ",\n";
+			stream << "        \"cyclic_prefix_defers_postincrement\": "
+			       << (rewritePlan && rewritePlan->cyclicPrefixDefersPostIncrement ? "true" : "false") << ",\n";
+			stream << "        \"cyclic_prefix_postincrement_token_index\": "
+			       << (rewritePlan && rewritePlan->cyclicPrefixDefersPostIncrement
+			           ? rewritePlan->cyclicPrefixPostIncrementTokenIndex
+			           : 0) << ",\n";
+			stream << "        \"cyclic_prefix_postincrement_register\": ";
+			writeJsonString( stream,
+			                 rewritePlan && rewritePlan->cyclicPrefixDefersPostIncrement
+			                     ? rewritePlan->cyclicPrefixPostIncrementRegister.c_str()
+			                     : "" );
+			stream << ",\n";
 			stream << "        \"cyclic_prefix_insert_before_token_index\": "
 			       << (rewritePlan ? rewritePlan->cyclicPrefixInsertBeforeTokenIndex : 0) << ",\n";
 			stream << "        \"prefetch_insert_after_token_index\": "

@@ -1832,6 +1832,185 @@ TEST_CASE("VuSchedulerAnalysis: multi-Q cyclic prefixes can guard plain store si
     CHECK(storeCount == 1u);
 }
 
+TEST_CASE("VuSchedulerAnalysis: guarded multi-Q prefixes defer branch postincrements")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("--LoopCS 1, 1"));
+    REQUIRE(program.parse("lqi.w vf10, (vi03++)"));
+    REQUIRE(program.parse("div q, vf10[w], vf20[w]"));
+    REQUIRE(program.parse("mulq.w vf11, vf10, q"));
+    REQUIRE(program.parse("add.xyz vf12, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf13, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf14, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf15, vf00, vf00"));
+    REQUIRE(program.parse("div q, vf10[w], vf21[w]"));
+    REQUIRE(program.parse("mulq.w vf12, vf10, q"));
+    REQUIRE(program.parse("add.xyz vf16, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf17, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf18, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf19, vf00, vf00"));
+    REQUIRE(program.parse("sq.w vf11, 0(vi05)"));
+    REQUIRE(program.parse("sq.w vf12, 1(vi05)"));
+    REQUIRE(program.parse("iaddiu vi05, vi05, 2"));
+    REQUIRE(program.parse("ibne vi03, vi04, loop_lid"));
+
+    std::vector<vcl::VuLoopPipelineOpportunity> opportunities =
+        vcl::findVuLoopPipelineOpportunities(program.tokenizer.tokens());
+    REQUIRE(opportunities.size() == 1u);
+    CHECK(opportunities[0].canEmitMultiQSoftwarePipeline);
+    CHECK(opportunities[0].multiQCyclicPrefixNeedsGuard);
+    CHECK(opportunities[0].multiQCyclicPrefixDefersPostIncrement);
+    CHECK(opportunities[0].multiQCyclicPrefixPostIncrementRegister == "VI03");
+    CHECK(!hasString(opportunities[0].multiQSoftwarePipelineBlockers,
+                     "pre_or_post_increment_memory"));
+    CHECK(!hasString(opportunities[0].multiQSoftwarePipelineBlockers,
+                     "cyclic_prefix_side_effect"));
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans =
+        vcl::buildVuSoftwarePipelineRewritePlans(program.tokenizer.tokens());
+    REQUIRE(plans.size() == 1u);
+    CHECK(plans[0].cyclicPrefixDefersPostIncrement);
+    CHECK(plans[0].cyclicPrefixPostIncrementRegister == "VI03");
+
+    std::list<vcl::Token> transformed =
+        vcl::applyVuSoftwarePipelinePlans(program.tokenizer.tokens());
+
+    bool inProlog = false;
+    bool inMain = false;
+    bool sawPrologPostIncrement = false;
+    bool sawGuard = false;
+    bool sawPlainPrefetch = false;
+    bool sawLoopBranch = false;
+    bool sawDeferredIncrement = false;
+    for (std::list<vcl::Token>::const_iterator i = transformed.begin();
+         i != transformed.end(); ++i)
+    {
+        if (i->label() == "loop_lid__PROLOG")
+            inProlog = true;
+        if (i->label() == "loop_lid")
+        {
+            inProlog = false;
+            inMain = true;
+        }
+        if (i->label() == "loop_lid__DRAIN")
+            inMain = false;
+
+        const std::string mnemonic = vcl::normalizeVuMnemonic(i->name());
+        if (inProlog && mnemonic == "lqi")
+            sawPrologPostIncrement = true;
+        if (inMain && mnemonic == "ibeq" && tokenBranchesTo(*i, "loop_lid__DRAIN"))
+            sawGuard = true;
+        if (inMain && sawGuard && mnemonic == "lq")
+            sawPlainPrefetch = true;
+        if (inMain && mnemonic == "ibne" && tokenBranchesTo(*i, "loop_lid"))
+            sawLoopBranch = true;
+        if (inMain && sawLoopBranch && mnemonic == "iaddiu"
+            && (i->flags() & vcl::Token::BRANCH_DELAY_FILLER))
+            sawDeferredIncrement = true;
+    }
+
+    CHECK(sawPrologPostIncrement);
+    CHECK(sawGuard);
+    CHECK(sawPlainPrefetch);
+    CHECK(sawLoopBranch);
+    CHECK(sawDeferredIncrement);
+}
+
+TEST_CASE("VuSchedulerAnalysis: postincrement deferral requires the loop branch to read the base")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("--LoopCS 1, 1"));
+    REQUIRE(program.parse("lqi.w vf10, (vi03++)"));
+    REQUIRE(program.parse("div q, vf10[w], vf20[w]"));
+    REQUIRE(program.parse("mulq.w vf11, vf10, q"));
+    REQUIRE(program.parse("add.xyz vf12, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf13, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf14, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf15, vf00, vf00"));
+    REQUIRE(program.parse("div q, vf10[w], vf21[w]"));
+    REQUIRE(program.parse("mulq.w vf12, vf10, q"));
+    REQUIRE(program.parse("add.xyz vf16, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf17, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf18, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf19, vf00, vf00"));
+    REQUIRE(program.parse("iaddiu vi01, vi01, 1"));
+    REQUIRE(program.parse("ibne vi01, vi02, loop_lid"));
+
+    std::vector<vcl::VuLoopPipelineOpportunity> opportunities =
+        vcl::findVuLoopPipelineOpportunities(program.tokenizer.tokens());
+    REQUIRE(opportunities.size() == 1u);
+    CHECK(!opportunities[0].multiQCyclicPrefixDefersPostIncrement);
+    CHECK(!opportunities[0].canEmitMultiQSoftwarePipeline);
+    CHECK(hasString(opportunities[0].multiQSoftwarePipelineBlockers,
+                    "pre_or_post_increment_memory"));
+}
+
+TEST_CASE("VuSchedulerAnalysis: postincrement deferral rejects a second incrementing access")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("--LoopCS 1, 1"));
+    REQUIRE(program.parse("lqi.w vf10, (vi03++)"));
+    REQUIRE(program.parse("div q, vf10[w], vf20[w]"));
+    REQUIRE(program.parse("mulq.w vf11, vf10, q"));
+    REQUIRE(program.parse("add.xyz vf12, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf13, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf14, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf15, vf00, vf00"));
+    REQUIRE(program.parse("div q, vf10[w], vf21[w]"));
+    REQUIRE(program.parse("mulq.w vf12, vf10, q"));
+    REQUIRE(program.parse("lqi.w vf22, (vi06++)"));
+    REQUIRE(program.parse("add.xyz vf16, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf17, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf18, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf19, vf00, vf00"));
+    REQUIRE(program.parse("ibne vi03, vi04, loop_lid"));
+
+    std::vector<vcl::VuLoopPipelineOpportunity> opportunities =
+        vcl::findVuLoopPipelineOpportunities(program.tokenizer.tokens());
+    REQUIRE(opportunities.size() == 1u);
+    CHECK(!opportunities[0].multiQCyclicPrefixDefersPostIncrement);
+    CHECK(!opportunities[0].canEmitMultiQSoftwarePipeline);
+    CHECK(hasString(opportunities[0].multiQSoftwarePipelineBlockers,
+                    "pre_or_post_increment_memory"));
+}
+
+TEST_CASE("VuSchedulerAnalysis: postincrement deferral rejects later base reads")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("--LoopCS 1, 1"));
+    REQUIRE(program.parse("lqi.w vf10, (vi03++)"));
+    REQUIRE(program.parse("div q, vf10[w], vf20[w]"));
+    REQUIRE(program.parse("mulq.w vf11, vf10, q"));
+    REQUIRE(program.parse("add.xyz vf12, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf13, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf14, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf15, vf00, vf00"));
+    REQUIRE(program.parse("div q, vf10[w], vf21[w]"));
+    REQUIRE(program.parse("mulq.w vf12, vf10, q"));
+    REQUIRE(program.parse("iadd vi05, vi03, vi00"));
+    REQUIRE(program.parse("add.xyz vf16, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf17, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf18, vf00, vf00"));
+    REQUIRE(program.parse("add.xyz vf19, vf00, vf00"));
+    REQUIRE(program.parse("ibne vi03, vi04, loop_lid"));
+
+    std::vector<vcl::VuLoopPipelineOpportunity> opportunities =
+        vcl::findVuLoopPipelineOpportunities(program.tokenizer.tokens());
+    REQUIRE(opportunities.size() == 1u);
+    CHECK(!opportunities[0].multiQCyclicPrefixDefersPostIncrement);
+    CHECK(!opportunities[0].canEmitMultiQSoftwarePipeline);
+    CHECK(hasString(opportunities[0].multiQSoftwarePipelineBlockers,
+                    "pre_or_post_increment_memory"));
+}
+
 TEST_CASE("VuSchedulerAnalysis: loaded multi-Q suffix drains rotate values across the prolog boundary")
 {
     vcl::Error::ResetErrorCount();

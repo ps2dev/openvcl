@@ -3410,9 +3410,12 @@ namespace
 			return false;
 		if( access.branchDelaySlots > 0 )
 			return false;
-		if( access.memoryFlags != VU_MEMORY_FLAG_NONE )
-			return false;
-		return access.memoryKind == VU_MEMORY_STORE;
+		if( access.memoryKind == VU_MEMORY_LOAD
+		    && access.memoryFlags == VU_MEMORY_FLAG_POSTINC
+		    && access.hasMemoryBase )
+			return true;
+		return access.memoryFlags == VU_MEMORY_FLAG_NONE
+		    && access.memoryKind == VU_MEMORY_STORE;
 	}
 
 	bool tokenHasUnsafeMultiQCyclicPrefixSideEffect( const Token& token,
@@ -3426,12 +3429,11 @@ namespace
 			return true;
 		if( access.branchDelaySlots > 0 )
 			return true;
-		if( access.memoryFlags & (VU_MEMORY_FLAG_PREDEC | VU_MEMORY_FLAG_POSTINC) )
-			return true;
 		if( allowGuardedPlainStores
-		    && access.memoryKind == VU_MEMORY_STORE
 		    && tokenHasGuardableMultiQCyclicPrefixSideEffect( token ) )
 			return false;
+		if( access.memoryFlags & (VU_MEMORY_FLAG_PREDEC | VU_MEMORY_FLAG_POSTINC) )
+			return true;
 		return access.memoryKind == VU_MEMORY_STORE
 		    || access.memoryKind == VU_MEMORY_XGKICK;
 	}
@@ -3448,6 +3450,96 @@ namespace
 				return true;
 		}
 		return false;
+	}
+
+	bool configureDeferredPostIncrementForCandidate( VuLoopPipelineOpportunity& candidate,
+	                                                const std::vector<const Token*>& indexedTokens )
+	{
+		candidate.multiQCyclicPrefixDefersPostIncrement = false;
+		candidate.multiQCyclicPrefixPostIncrementTokenIndex = VU_SCHEDULED_TOKEN_INDEX_NONE;
+		candidate.multiQCyclicPrefixPostIncrementRegister.clear();
+
+		std::set<unsigned int> loopTokenIndices;
+		loopTokenIndices.insert( candidate.multiQCyclicPrefixTokenIndices.begin(),
+		                         candidate.multiQCyclicPrefixTokenIndices.end() );
+		loopTokenIndices.insert( candidate.multiQMainTokenIndices.begin(),
+		                         candidate.multiQMainTokenIndices.end() );
+
+		unsigned int postIncrementTokenIndex = VU_SCHEDULED_TOKEN_INDEX_NONE;
+		std::string postIncrementRegister;
+		for( std::set<unsigned int>::const_iterator i = loopTokenIndices.begin();
+		     i != loopTokenIndices.end(); ++i )
+		{
+			if( *i >= indexedTokens.size() )
+				return false;
+			VuTokenResourceAccess access;
+			if( !buildVuTokenResourceAccess( *indexedTokens[*i], access ) )
+				return false;
+			if( (access.memoryFlags & (VU_MEMORY_FLAG_PREDEC | VU_MEMORY_FLAG_POSTINC)) == 0 )
+				continue;
+
+			if( postIncrementTokenIndex != VU_SCHEDULED_TOKEN_INDEX_NONE
+			    || access.memoryKind != VU_MEMORY_LOAD
+			    || access.memoryFlags != VU_MEMORY_FLAG_POSTINC
+			    || !access.hasMemoryBase )
+				return false;
+			if( std::find( candidate.multiQCyclicPrefixTokenIndices.begin(),
+			               candidate.multiQCyclicPrefixTokenIndices.end(),
+			               *i ) == candidate.multiQCyclicPrefixTokenIndices.end() )
+				return false;
+
+			postIncrementTokenIndex = *i;
+			postIncrementRegister = access.memoryBaseRegister;
+		}
+
+		if( postIncrementTokenIndex == VU_SCHEDULED_TOKEN_INDEX_NONE )
+			return true;
+		if( candidate.branchDelaySlots != 1
+		    || candidate.branchTokenIndex >= indexedTokens.size()
+		    || !branchCanInvertToDrain( *indexedTokens[candidate.branchTokenIndex] ) )
+			return false;
+
+		VuTokenResourceAccess branchAccess;
+		if( !buildVuTokenResourceAccess( *indexedTokens[candidate.branchTokenIndex], branchAccess )
+		    || !containsKey( branchAccess.registerReads, postIncrementRegister )
+		    || containsKey( branchAccess.registerWrites, postIncrementRegister ) )
+			return false;
+
+		/*
+		 * The postincrement itself is deliberately absent from registerWrites in
+		 * VuTokenResourceAccess.  Apart from that one implicit update, require the
+		 * branch induction register to remain untouched throughout the loop.  This
+		 * keeps the rewrite equivalent to moving exactly one +1 update into the
+		 * branch delay slot.
+		 */
+		for( std::set<unsigned int>::const_iterator i = loopTokenIndices.begin();
+		     i != loopTokenIndices.end(); ++i )
+		{
+			if( *i == postIncrementTokenIndex || *i >= indexedTokens.size() )
+				continue;
+			VuTokenResourceAccess access;
+			if( !buildVuTokenResourceAccess( *indexedTokens[*i], access ) )
+				return false;
+			if( containsKey( access.registerWrites, postIncrementRegister ) )
+				return false;
+			/*
+			 * Delaying the update also changes the value observed by later reads.
+			 * The loop branch is the one intentional exception: it is evaluated
+			 * before the deferred +1 and the transformed guard accounts for that
+			 * phase shift.  Any other post-LQI read would observe the old base.
+			 */
+			if( *i > postIncrementTokenIndex
+			    && *i != candidate.branchTokenIndex
+			    && (containsKey( access.registerReads, postIncrementRegister )
+			        || (access.hasMemoryBase
+			            && access.memoryBaseRegister == postIncrementRegister)) )
+				return false;
+		}
+
+		candidate.multiQCyclicPrefixDefersPostIncrement = true;
+		candidate.multiQCyclicPrefixPostIncrementTokenIndex = postIncrementTokenIndex;
+		candidate.multiQCyclicPrefixPostIncrementRegister = postIncrementRegister;
+		return true;
 	}
 
 	bool tokenIndicesHaveGuardableMultiQCyclicPrefixSideEffects( const std::vector<unsigned int>& tokenIndices,
@@ -3596,6 +3688,119 @@ namespace
 		                                       VU_SCHEDULED_TOKEN_INDEX_NONE );
 	}
 
+	const Operand* syntheticLqOperand()
+	{
+		static const Operand lqOperand( "LQ",
+		                                2,
+		                                Operand::LOWER | Operand::DEST,
+		                                "vf:dest:write,(vi):zero|imm(vi):evaluate",
+		                                Operand::LSU,
+		                                1,
+		                                3 );
+		return &lqOperand;
+	}
+
+	const Operand* syntheticIaddiuOperand()
+	{
+		static const Operand iaddiuOperand( "IADDIU",
+		                                    3,
+		                                    Operand::LOWER,
+		                                    "vi:write,vi,imm:evaluate",
+		                                    Operand::IALU,
+		                                    1,
+		                                    1 );
+		return &iaddiuOperand;
+	}
+
+	bool stripPostIncrementFromLoad( Token& token, const std::string& baseRegister )
+	{
+		VuTokenResourceAccess access;
+		if( !buildVuTokenResourceAccess( token, access )
+		    || access.memoryKind != VU_MEMORY_LOAD
+		    || access.memoryFlags != VU_MEMORY_FLAG_POSTINC
+		    || !access.hasMemoryBase
+		    || access.memoryBaseRegister != baseRegister )
+			return false;
+
+		token.setName( "lq" );
+		token.setOperand( syntheticLqOperand() );
+		for( std::list<Token::Argument>::iterator i = token.arguments().begin();
+		     i != token.arguments().end(); ++i )
+		{
+			if( i->type() != Token::Argument::INTEGER_REGISTER
+			    || !(i->flags() & Token::Argument::INDIRECT) )
+				continue;
+			std::string key;
+			if( !vuRegisterKey( *i, key ) || key != baseRegister )
+				continue;
+			i->setFlags( i->flags() & ~(Token::Argument::POSTINC | Token::Argument::PREDEC) );
+			i->setImmediate( "0" );
+			return true;
+		}
+		return false;
+	}
+
+	Token makeDeferredPostIncrementToken( const Token& postIncrementLoad,
+	                                      const std::string& baseRegister,
+	                                      bool branchDelayFiller )
+	{
+		Token token( postIncrementLoad );
+		token.setLabel( "" );
+		token.setName( "iaddiu" );
+		token.setOperand( syntheticIaddiuOperand() );
+		token.setFlags( Token::PROCESSED
+		                | (branchDelayFiller ? Token::BRANCH_DELAY_FILLER : 0) );
+		token.setBroadcast( 0 );
+		token.setFields( 0 );
+		token.arguments().clear();
+
+		for( std::list<Token::Argument>::const_iterator i = postIncrementLoad.arguments().begin();
+		     i != postIncrementLoad.arguments().end(); ++i )
+		{
+			if( i->type() != Token::Argument::INTEGER_REGISTER
+			    || !(i->flags() & Token::Argument::INDIRECT) )
+				continue;
+			std::string key;
+			if( !vuRegisterKey( *i, key ) || key != baseRegister )
+				continue;
+
+			Token::Argument dst( *i );
+			dst.setFlags( Token::Argument::WRITE );
+			dst.setImmediate( "" );
+			token.arguments().push_back( dst );
+
+			Token::Argument src( *i );
+			src.setFlags( 0 );
+			src.setImmediate( "" );
+			token.arguments().push_back( src );
+			break;
+		}
+
+		Token::Argument immediate( "1" );
+		immediate.setType( Token::Argument::IMMEDIATE );
+		immediate.setFlags( Token::Argument::EVALUATE );
+		immediate.setImmediate( "1" );
+		token.arguments().push_back( immediate );
+		return token;
+	}
+
+	Token adjustedMultiQCyclicPrefixTokenForOpportunity(
+	    const Token& token,
+	    unsigned int tokenIndex,
+	    const VuLoopPipelineOpportunity& opportunity )
+	{
+		Token copy =
+		    adjustedMultiQCyclicPrefixToken( token,
+		                                     opportunity.multiQCyclicPrefixRotations,
+		                                     opportunity.inductionUpdates,
+		                                     opportunity.multiQCyclicPrefixInsertBeforeTokenIndex );
+		if( opportunity.multiQCyclicPrefixDefersPostIncrement
+		    && tokenIndex == opportunity.multiQCyclicPrefixPostIncrementTokenIndex )
+			stripPostIncrementFromLoad( copy,
+			                            opportunity.multiQCyclicPrefixPostIncrementRegister );
+		return copy;
+	}
+
 	void collectFloatWriteRotationFields( const Token& token,
 	                                      std::vector<VuSoftwarePipelineRotation>& rotations )
 	{
@@ -3702,6 +3907,9 @@ namespace
 		opportunity.multiQCyclicPrefixRotations.clear();
 		opportunity.multiQCyclicPrefixNeedsGuard = false;
 		opportunity.multiQCyclicPrefixLastTokenInBranchDelaySlot = false;
+		opportunity.multiQCyclicPrefixDefersPostIncrement = false;
+		opportunity.multiQCyclicPrefixPostIncrementTokenIndex = VU_SCHEDULED_TOKEN_INDEX_NONE;
+		opportunity.multiQCyclicPrefixPostIncrementRegister.clear();
 		appendPipelineInstructionIndices( loop,
 		                                  0,
 		                                  prefixEndOffset,
@@ -3759,10 +3967,10 @@ namespace
 		     i != candidate.multiQCyclicPrefixTokenIndices.end(); ++i )
 		{
 			if( *i < indexedTokens.size() )
-				tokens.push_back( adjustedMultiQCyclicPrefixToken( *indexedTokens[*i],
-				                                                   candidate.multiQCyclicPrefixRotations,
-				                                                   candidate.inductionUpdates,
-				                                                   candidate.multiQCyclicPrefixInsertBeforeTokenIndex ) );
+				tokens.push_back( adjustedMultiQCyclicPrefixTokenForOpportunity(
+				    *indexedTokens[*i],
+				    *i,
+				    candidate ) );
 		}
 	}
 
@@ -4051,7 +4259,15 @@ namespace
 		if( !emittedPrefix )
 			appendMultiQCyclicPrefixForScheduleCost( mainTokens, candidate, indexedTokens );
 		if( candidate.branchTokenIndex < indexedTokens.size() )
+		{
 			appendUnlabeledTokenForScheduleCost( mainTokens, *indexedTokens[candidate.branchTokenIndex] );
+			if( candidate.multiQCyclicPrefixDefersPostIncrement
+			    && candidate.multiQCyclicPrefixPostIncrementTokenIndex < indexedTokens.size() )
+				mainTokens.push_back( makeDeferredPostIncrementToken(
+				    *indexedTokens[candidate.multiQCyclicPrefixPostIncrementTokenIndex],
+				    candidate.multiQCyclicPrefixPostIncrementRegister,
+				    true ) );
+		}
 	}
 
 	unsigned int multiQPipelineCandidateMainCycles( const VuLoopPipelineOpportunity& candidate,
@@ -4082,10 +4298,13 @@ namespace
 		                               branchOffset,
 		                               candidate );
 		std::vector<VuLoopPipelineOpportunity> candidates;
-		candidates.push_back( candidate );
-		VuLoopPipelineOpportunity rotatedCandidate = candidate;
-		if( assignMultiQCyclicPrefixRotations( loop, indexedTokens, rotatedCandidate ) )
-			candidates.push_back( rotatedCandidate );
+		if( configureDeferredPostIncrementForCandidate( candidate, indexedTokens ) )
+		{
+			candidates.push_back( candidate );
+			VuLoopPipelineOpportunity rotatedCandidate = candidate;
+			if( assignMultiQCyclicPrefixRotations( loop, indexedTokens, rotatedCandidate ) )
+				candidates.push_back( rotatedCandidate );
+		}
 
 		bool found = false;
 		for( std::vector<VuLoopPipelineOpportunity>::const_iterator candidateIt = candidates.begin();
@@ -4770,6 +4989,12 @@ namespace
 		plan.cyclicPrefixNeedsGuard = bestCandidate.multiQCyclicPrefixNeedsGuard;
 		plan.cyclicPrefixLastTokenInBranchDelaySlot =
 		    bestCandidate.multiQCyclicPrefixLastTokenInBranchDelaySlot;
+		plan.cyclicPrefixDefersPostIncrement =
+		    bestCandidate.multiQCyclicPrefixDefersPostIncrement;
+		plan.cyclicPrefixPostIncrementTokenIndex =
+		    bestCandidate.multiQCyclicPrefixPostIncrementTokenIndex;
+		plan.cyclicPrefixPostIncrementRegister =
+		    bestCandidate.multiQCyclicPrefixPostIncrementRegister;
 		plan.emitsDrain = bestCandidate.multiQCyclicPrefixNeedsGuard;
 		plan.inductionUpdates = bestCandidate.inductionUpdates;
 		plan.drainTokenIndices = bestCandidate.drainTokenIndices;
@@ -5007,7 +5232,8 @@ namespace
 			addMultiQPipelineBlocker( opportunity, "not_simple_counted_loop" );
 		if( opportunity.branchDelaySlots == 0 )
 			addMultiQPipelineBlocker( opportunity, "missing_branch_delay_slot" );
-		if( opportunity.hasMemoryPreOrPostIncrement )
+		if( opportunity.hasMemoryPreOrPostIncrement
+		    && !opportunity.multiQCyclicPrefixDefersPostIncrement )
 			addMultiQPipelineBlocker( opportunity, "pre_or_post_increment_memory" );
 		if( opportunity.hasXgkick )
 			addMultiQPipelineBlocker( opportunity, "xgkick_barrier" );
@@ -5696,6 +5922,22 @@ namespace
 		return copy;
 	}
 
+	Token adjustedCyclicPrefixTokenForRewrite( const Token& token,
+	                                          unsigned int tokenIndex,
+	                                          const VuSoftwarePipelineRewritePlan& rewrite )
+	{
+		Token copy =
+		    adjustedMultiQCyclicPrefixToken( token,
+		                                     rewrite.cyclicPrefixRotations,
+		                                     rewrite.inductionUpdates,
+		                                     rewrite.cyclicPrefixInsertBeforeTokenIndex );
+		if( rewrite.cyclicPrefixDefersPostIncrement
+		    && tokenIndex == rewrite.cyclicPrefixPostIncrementTokenIndex )
+			stripPostIncrementFromLoad( copy,
+			                            rewrite.cyclicPrefixPostIncrementRegister );
+		return copy;
+	}
+
 	void appendCyclicPrefixTokens( std::list<Token>& output,
 	                               const std::vector<const Token*>& indexedTokens,
 	                               const VuSoftwarePipelineRewritePlan& rewrite,
@@ -5709,10 +5951,9 @@ namespace
 			if( !includeBranchDelayToken
 			    && rewriteDelaysCyclicPrefixTokenInBranchSlot( rewrite, *p ) )
 				continue;
-			output.push_back( adjustedMultiQCyclicPrefixToken( *indexedTokens[*p],
-			                                                   rewrite.cyclicPrefixRotations,
-			                                                   rewrite.inductionUpdates,
-			                                                   rewrite.cyclicPrefixInsertBeforeTokenIndex ) );
+			output.push_back( adjustedCyclicPrefixTokenForRewrite( *indexedTokens[*p],
+			                                                        *p,
+			                                                        rewrite ) );
 		}
 	}
 
@@ -5802,6 +6043,12 @@ namespace
 			                        rewrite.branchTokenIndex,
 			                        skipDelayedStores,
 			                        invertBranchToDrain );
+			if( rewrite.cyclicPrefixDefersPostIncrement
+			    && rewrite.cyclicPrefixPostIncrementTokenIndex < indexedTokens.size() )
+				output.push_back( makeDeferredPostIncrementToken(
+				    *indexedTokens[rewrite.cyclicPrefixPostIncrementTokenIndex],
+				    rewrite.cyclicPrefixPostIncrementRegister,
+				    true ) );
 			if( allowBranchDelayCyclicPrefix && !rewrite.cyclicPrefixNeedsGuard )
 				appendDelayedCyclicPrefixBranchToken( output, indexedTokens, rewrite );
 		}
@@ -6008,6 +6255,8 @@ VuLoopPipelineOpportunity::VuLoopPipelineOpportunity()
 	multiQCyclicPrefixInsertBeforeTokenIndex = VU_SCHEDULED_TOKEN_INDEX_NONE;
 	multiQCyclicPrefixNeedsGuard = false;
 	multiQCyclicPrefixLastTokenInBranchDelaySlot = false;
+	multiQCyclicPrefixDefersPostIncrement = false;
+	multiQCyclicPrefixPostIncrementTokenIndex = VU_SCHEDULED_TOKEN_INDEX_NONE;
 	memoryLoadCount = 0;
 	memoryStoreCount = 0;
 	hasMemoryPreOrPostIncrement = false;
@@ -6044,6 +6293,8 @@ VuSoftwarePipelineRewritePlan::VuSoftwarePipelineRewritePlan()
 	cyclicPrefixInsertBeforeTokenIndex = VU_SCHEDULED_TOKEN_INDEX_NONE;
 	cyclicPrefixNeedsGuard = false;
 	cyclicPrefixLastTokenInBranchDelaySlot = false;
+	cyclicPrefixDefersPostIncrement = false;
+	cyclicPrefixPostIncrementTokenIndex = VU_SCHEDULED_TOKEN_INDEX_NONE;
 	drainsSuffixStores = false;
 	emitsDrain = false;
 	stageCount = 1;
@@ -8693,6 +8944,12 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 				    bestOpportunity.multiQCyclicPrefixNeedsGuard;
 				opportunity.multiQCyclicPrefixLastTokenInBranchDelaySlot =
 				    bestOpportunity.multiQCyclicPrefixLastTokenInBranchDelaySlot;
+				opportunity.multiQCyclicPrefixDefersPostIncrement =
+				    bestOpportunity.multiQCyclicPrefixDefersPostIncrement;
+				opportunity.multiQCyclicPrefixPostIncrementTokenIndex =
+				    bestOpportunity.multiQCyclicPrefixPostIncrementTokenIndex;
+				opportunity.multiQCyclicPrefixPostIncrementRegister =
+				    bestOpportunity.multiQCyclicPrefixPostIncrementRegister;
 				opportunity.drainTokenIndices = bestOpportunity.drainTokenIndices;
 			}
 			else if( foundFallbackCyclicPrefix )
@@ -9751,6 +10008,12 @@ std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( 
 			plan.cyclicPrefixNeedsGuard = i->multiQCyclicPrefixNeedsGuard;
 			plan.cyclicPrefixLastTokenInBranchDelaySlot =
 			    i->multiQCyclicPrefixLastTokenInBranchDelaySlot;
+			plan.cyclicPrefixDefersPostIncrement =
+			    i->multiQCyclicPrefixDefersPostIncrement;
+			plan.cyclicPrefixPostIncrementTokenIndex =
+			    i->multiQCyclicPrefixPostIncrementTokenIndex;
+			plan.cyclicPrefixPostIncrementRegister =
+			    i->multiQCyclicPrefixPostIncrementRegister;
 			plan.emitsDrain = i->multiQCyclicPrefixNeedsGuard;
 			plan.drainsSuffixStores = i->canEmitSuffixStoreDrain;
 			plan.suffixStores = i->softwarePipelineSuffixStores;

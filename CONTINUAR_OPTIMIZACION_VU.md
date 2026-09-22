@@ -8,7 +8,7 @@ cambios del usuario en `/Users/fjtrujy/Projects/ps2gl/CMakeLists.txt`. MASP est�
 `/Users/fjtrujy/toolchains/ps2/ps2dev`.
 
 Fase 0 completada: la línea base original tenía 424 tests OpenVCL y 5 grupos
-MASP; la suite actual está en 430 tests. Los 13 pares Sony y
+MASP; la suite actual está en 436 tests. Los 13 pares Sony y
 52 candidatos ensamblan; 52 pruebas de renombrado de etiquetas pasan. Línea
 base reproducida en `build/baselines/verified`. Genérico: 265450 ciclos
 ponderados estimados frente a 100870 Sony. Kernel experimental: 267740;
@@ -42,12 +42,9 @@ tienen runtime reproducible en PCSX2. El bloqueo global
 `multi_store_loaded_suffix_stream` ya no es necesario para streams separados:
 la primera iteración pelada hace ahora el handoff de las rotaciones cyclic-prefix
 antes de consumirlas. `general_quad` pasa de nuevo 12/12 frames contra Sony con
-el rewrite activo; los 13 renderers compilan/ensamblan y la estimación ponderada
-default del corpus baja de 265450 a **258796** ciclos. Es una cifra estática, no
-rendimiento medido. `read_write_memory_stream_conflict` sigue protegiendo streams
-load/store con la misma base. El siguiente candidato general es
-`indexed/xform_loop_lid`, no los loops no-Q con CFG complejo. No convertir aún
-la métrica nueva en gate. Prohibidos atajos por
+el rewrite activo. `read_write_memory_stream_conflict` sigue protegiendo streams
+load/store con la misma base. No convertir aún la métrica nueva en gate.
+Prohibidos atajos por
 nombres, hashes o shaders conocidos. Distingue estimaciones de tiempos reales.
 
 La comprobación de alias de los suffix-store drains entiende ahora inducciones
@@ -56,10 +53,27 @@ offset del acceso posterior se traduce al espacio de direcciones que existía en
 el store retrasado antes de decidir si pueden aliasar. Un fixture diferencial
 dedicado (`test/ps2/vu1_alias_induction_differential`) compara en PCSX2 ocho
 qwords y el puntero final: `VU1_DIFFERENTIAL_PASS alias-induction rows=8
-pointer=40`. El corpus sigue en **258796** ciclos ponderados, los 19 rewrites
+pointer=40`. En ese milestone el corpus quedó en **258796** ciclos ponderados, los 19 rewrites
 no-Q siguen aceptados y la invariancia de labels pasa en las cuatro variantes.
-Esto no resuelve `indexed/xform_loop_lid`: su `lqi.w indices, (next_index++)`
-está dentro del prefijo candidato y actualiza precisamente el registro leído
-por el branch. Clonarlo literalmente adelantaría la condición del bucle, por lo
-que ese caso debe modelarse explícitamente y permanecer bloqueado mientras no
-haya una transformación y una prueba runtime equivalentes.
+`indexed/xform_loop_lid` está ahora cubierto mediante una transformación
+específica pero general por forma semántica: cuando existe exactamente un `LQI
+(base++)` dentro del prefijo y el branch invertible lee ese mismo `base`, sin
+ninguna otra escritura ni lectura posterior de ese registro antes del branch, el
+prólogo conserva el `LQI`, la copia
+steady-state usa `LQ 0(base)` y el `+1` se materializa en el delay slot del
+branch original. Un guard invertido antes del prefijo especulativo evita leer o
+incrementar más allá de la última iteración. El fixture
+`test/ps2/vu1_postincrement_prefix_differential` compara memoria y puntero para
+1, 2 y 4 iteraciones en PCSX2 y da
+`VU1_DIFFERENTIAL_PASS postincrement-prefix cases=1,2,4`.
+El dump JSON expone explícitamente
+`cyclic_prefix_defers_postincrement`, token y registro para auditar esta ruta.
+Los 13 renderers vuelven a compilar/ensamblar, la invariancia de labels default
+pasa 13/13 y la estimación ponderada default baja a **258325** ciclos
+(Sony: 100870). `indexed` queda en **31874** frente a **32340** sin pipeline.
+Estas cifras siguen siendo estimaciones estáticas, no rendimiento medido.
+
+El siguiente trabajo debe volver a un problema general: corregir la ponderación
+del cost-model para no multiplicar colas fallthrough de una sola ejecución, o
+abordar explícitamente los CFG no simples. No relajar `simpleCountedLoop` de
+forma global para cubrirlos.

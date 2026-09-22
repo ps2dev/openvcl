@@ -234,14 +234,24 @@ Elegir las primeras optimizaciones por evidencia, no por el nombre del shader.
    frontera durante 12 frames contra Sony en PCSX2. Los streams load/store con
    la misma base siguen bloqueados por `read_write_memory_stream_conflict`.
    Para stores del mismo stream, una inducción self-`iaddiu`/`isubiu` de paso
-   constante entre accesos puede usarse para traducir ambos offsets al mismo
-   espacio de direcciones antes del análisis de alias. Este caso dispone de
-   diferencial PCSX2 (`vu1_alias_induction_differential`) sobre memoria y
-   puntero final. No confundirlo con un `LQI/SQI` clonado: si el propio acceso
-   con pre/postincremento forma parte del prefijo, su actualización del VI
-   sigue siendo un side effect bloqueante. En particular
-   `indexed/xform_loop_lid` contiene `lqi.w (...next_index++)` y
-   `next_index` alimenta la condición de salida.
+	   constante entre accesos puede usarse para traducir ambos offsets al mismo
+	   espacio de direcciones antes del análisis de alias. Este caso dispone de
+	   diferencial PCSX2 (`vu1_alias_induction_differential`) sobre memoria y
+	   puntero final.
+	   Un `LQI (...base++)` dentro del propio prefijo solo puede transformarse
+	   bajo una regla separada y estrecha: debe ser el único acceso con
+	   pre/postincremento del loop, el branch de una ranura debe ser invertible y
+	   leer el mismo `base`, ningún otro token puede escribir ese registro y
+	   ninguna instrucción posterior al `LQI` puede leerlo antes del branch. El
+	   prólogo conserva el `LQI`; la copia steady-state se convierte en
+	   `LQ 0(base)`; el incremento se difiere al delay slot del branch original;
+	   y un guard invertido delante del prefijo especulativo evita una lectura o
+	   actualización extra al terminar. `indexed/xform_loop_lid` satisface esta
+	   forma y queda cubierto por
+	   `vu1_postincrement_prefix_differential`, que compara memoria y puntero en
+	   PCSX2 para 1, 2 y 4 iteraciones. Múltiples accesos incrementales, predecremento,
+	   branches no invertibles, escrituras adicionales o lecturas posteriores del
+	   base siguen bloqueados.
 
 **Entrega:** mejoras por categoría de bucle, cada una con casos positivos,
 negativos y diferenciales; fallback seguro cuando la transformación no es legal.

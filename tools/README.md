@@ -149,6 +149,26 @@ requires the final output pointer to be 40. The expected marker is
 steps and pre/postincrement instructions cloned into the cyclic prefix remain
 outside this proof.
 
+The guarded postincrement-prefix fixture covers the separate multi-Q case where
+the cyclic prefix itself contains one `LQI (...base++)` and the loop branch
+uses that same base as its induction value:
+
+```sh
+make -C test/ps2/vu1_postincrement_prefix_differential
+python3 test/ps2/vu1_differential/run_pcsx2.py \
+  --elf test/ps2/vu1_postincrement_prefix_differential/vu1_postincrement_prefix_differential.elf
+```
+
+The candidate keeps the original `LQI` in the prolog, emits a plain
+`LQ 0(base)` for the steady-state speculative prefix, and defers the `+1` to
+the original loop branch delay slot. An inverted guard skips the speculative
+prefix on the final iteration. The harness compares eight output qwords and the
+final pointer for trip counts 1, 2, and 4; the expected marker is
+`VU1_DIFFERENTIAL_PASS postincrement-prefix cases=1,2,4`. The planner requires
+exactly one incrementing access, a one-slot invertible branch that reads the same
+base, no other writes to that register, and no later reads before the branch.
+Predecrement, multiple incrementing accesses, and later base reads remain blocked.
+
 For scheduler isolation only, the following environment switches disable
 classes of rewrite without changing source shaders: `OPENVCL_DISABLE_MULTI_Q_SOFTWARE_PIPELINE`,
 `OPENVCL_DISABLE_NO_Q_CYCLIC_PREFIX`, `OPENVCL_DISABLE_NO_Q_LOOP_EXTRA_CYCLIC_PREFIX`,

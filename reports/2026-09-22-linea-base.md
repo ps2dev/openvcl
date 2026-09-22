@@ -169,10 +169,25 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    el prefijo clonado se inserta después de esa actualización. Un harness VU1
    diferencial en PCSX2 compara memoria bit a bit contra la ruta sin pipeline y
    comprueba además el puntero final: `VU1_DIFFERENTIAL_PASS autoincrement
-   rows=4 pointer=36`. Los pre/post-incrementos dentro del propio prefijo clonado
-   siguen rechazados. Esto amplía cobertura semántica; el selector solo pasa de
-   63 a 62 ciclos aislados y el steady-state emitido mide 65 filas, por lo que
-   no se reclama una mejora de rendimiento runtime.
+   rows=4 pointer=36`. El caso distinto de un `LQI (...base++)` dentro del
+   propio prefijo clonado también puede cubrirse ahora, pero solo bajo una
+   condición estructural estricta: exactamente un acceso postincrementado, branch
+   invertible de una ranura que lee el mismo `base`, ninguna otra escritura de
+   ese VI y ninguna lectura posterior antes del branch. El prólogo mantiene el
+   `LQI`; la copia steady-state usa
+   `LQ 0(base)`; el `+1` se ejecuta en el delay slot del branch original; y un
+   guard invertido evita especular más allá de la salida. Esto habilita
+   `indexed/xform_loop_lid` sin reconocer su nombre. El fixture
+   `vu1_postincrement_prefix_differential` compara ocho qwords y el puntero final
+   para 1, 2 y 4 iteraciones y produce
+   `VU1_DIFFERENTIAL_PASS postincrement-prefix cases=1,2,4`. El caso de una
+   iteración prueba específicamente que el drain no aplica un incremento extra.
+   Múltiples accesos incrementales, predecrementos, branches incompatibles,
+   escrituras adicionales o lecturas posteriores de la base permanecen
+   bloqueados. En el corpus actual,
+   `indexed` pasa de 32340 ciclos ponderados estimados sin pipeline a **31874**
+   con la ruta genérica; el agregado default queda en **258325** frente a 100870
+   Sony. Son estimaciones estáticas, no una medición de rendimiento PS2.
 5. **Límites del estimador y discrepancia planner/emisor cuantificada.** No
    recorre dinámicamente el CFG: pondera bloques de un recorrido textual y
    modela esperas Q/P. `tools/analyze_ps2gl_no_q_rewrites.py` muestra que los
@@ -215,7 +230,7 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    sección `loop_candidates` del dump JSON/texto publica forma del bucle,
    productores/consumidores Q, memoria, autoincrementos, XGKICK y ahora también
    labels/branches internos, salidas y backedges anidados. La suite queda en
-   **430 casos**. Tras habilitar el caso seguro de autoincremento se recompilan
+   **436 casos**. Tras habilitar los casos seguros de autoincremento se recompilan
    y ensamblan los **13 shaders**: solo cambia `indexed_vcl.vsm`; los otros 12
    permanecen bit a bit idénticos a la baseline `default`.
 
@@ -240,6 +255,12 @@ Ver `tools/README.md`. Todo está bajo la raíz de OpenVCL:
 - `build/baselines/multistore-handoff/`: baseline posterior al soporte de drains
   multi-store; los 13 renderers OpenVCL compilan/ensamblan y las cuatro variantes
   de coste quedan resumidas en `summary.md`.
+- `build/baselines/postincrement-prefix-002/`: baseline final con la transformación
+  `LQI -> LQ + iaddiu` de `indexed/xform_loop_lid`; `metadata.json` marca
+  `complete=true`, sin fallos, y los 13 renderers ensamblan.
+- `build/label-invariance-postincrement-002/results.json`: los 13 renderers
+  default conservan instrucciones equivalentes tras renombrar labels y todos
+  ensamblan.
 - `build-plan/Testing/Temporary/LastTest.log` y el equivalente en
   `../masp/build-plan/`: pruebas de las herramientas.
 
@@ -250,17 +271,17 @@ resumidos; para reproducirlos en otra máquina ejecutar de nuevo las herramienta
 
 Completar fase 1 antes de promover cambios de scheduling: el harness diferencial
 ya tiene ejecución runtime automatizada en PCSX2, el ciclo residual y la cola de
-salida ya están caracterizados y `general_quad` dispone de un oráculo
-determinista que coincide con Sony durante 12 frames incluso con los drains
-multi-store de `xform_loop_lid` habilitados. El siguiente candidato de cobertura
-general es `indexed/xform_loop_lid`, cuyo autoincremento está todavía dentro del
-camino transformado, manteniendo separadas las reglas de aliasing demostrado de
-los casos de CFG complejo. Después puede retomarse la ponderación del cost-model
-para que una cola fallthrough de una ejecución no se multiplique por el número
-de iteraciones.
+salida ya están caracterizados, `general_quad` dispone de un oráculo
+determinista que coincide con Sony durante 12 frames y
+`indexed/xform_loop_lid` tiene ya un diferencial específico para el
+postincremento del prefijo. El siguiente trabajo general debe ser corregir la
+ponderación del cost-model para que una cola fallthrough de una ejecución no se
+multiplique por el número de iteraciones, o bien abordar los 16 loops no-Q con
+CFG no simple mediante soporte explícito multi-exit/nested-loop. No eliminar
+`simpleCountedLoop` como atajo.
 `bestCyclesInContext` queda por ahora estrictamente diagnóstico: no usarlo como
-gate hasta cerrar ese oráculo runtime. No usar nombres de shaders para tomar
-decisiones.
+gate hasta que el modelo total de prólogo/main/drain esté cerrado. No usar nombres
+de shaders para tomar decisiones.
 
 No alterar latencias de hardware ni habilitar un pase experimental para conseguir
 una tabla favorable. No considerar ensamblado, invariancia de nombres o capturas
