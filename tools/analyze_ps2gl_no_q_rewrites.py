@@ -142,7 +142,7 @@ def emitted_loop_region(vsm_text, label):
     }
 
 
-def label_block_cost(cost, label):
+def exact_block_cost(cost, label):
     for block in cost.get("blocks", []):
         if block.get("label") == label:
             return {
@@ -155,7 +155,37 @@ def label_block_cost(cost, label):
                 "static": block.get("static_cycles"),
                 "estimated": block.get("estimated_cycles", block.get("static_cycles")),
             }
-    return {"static": None, "estimated": None}
+    return None
+
+
+def label_block_cost(cost, label):
+    main = exact_block_cost(cost, label)
+    if main is None:
+        return {
+            "static": None,
+            "estimated": None,
+            "steady_static": None,
+            "tail_static": None,
+            "split": False,
+        }
+
+    tail = exact_block_cost(cost, f"{label}__FALLTHROUGH")
+    if tail is None:
+        return {
+            "static": main["static"],
+            "estimated": main["estimated"],
+            "steady_static": None,
+            "tail_static": None,
+            "split": False,
+        }
+
+    return {
+        "static": main["static"] + tail["static"],
+        "estimated": main["estimated"] + tail["estimated"],
+        "steady_static": main["static"],
+        "tail_static": tail["static"],
+        "split": True,
+    }
 
 
 def main():
@@ -219,6 +249,9 @@ def main():
                     }),
                     "cost_label_block_static_cycles": block_cost["static"],
                     "cost_label_block_estimated_cycles": block_cost["estimated"],
+                    "cost_steady_state_static_cycles": block_cost["steady_static"],
+                    "cost_fallthrough_tail_static_cycles": block_cost["tail_static"],
+                    "cost_split_fallthrough_tail": block_cost["split"],
                 }
                 baseline_cycles = row["selector_baseline_cycles"]
                 best_cycles = row["selector_best_cycles"]
@@ -252,6 +285,20 @@ def main():
                     - row["fallthrough_tail_static_cycles"]
                     if block_static_cycles is not None
                     and row["steady_state_static_cycles"] is not None
+                    and row["fallthrough_tail_static_cycles"] is not None
+                    else None
+                )
+                row["cost_steady_state_static_error"] = (
+                    row["cost_steady_state_static_cycles"]
+                    - row["steady_state_static_cycles"]
+                    if row["cost_steady_state_static_cycles"] is not None
+                    and row["steady_state_static_cycles"] is not None
+                    else None
+                )
+                row["cost_fallthrough_tail_static_error"] = (
+                    row["cost_fallthrough_tail_static_cycles"]
+                    - row["fallthrough_tail_static_cycles"]
+                    if row["cost_fallthrough_tail_static_cycles"] is not None
                     and row["fallthrough_tail_static_cycles"] is not None
                     else None
                 )
@@ -310,6 +357,19 @@ def main():
             "max_label_block_static_partition_error": max(
                 (abs(r["label_block_static_partition_error"]) for r in rows
                  if r["label_block_static_partition_error"] is not None),
+                default=0,
+            ),
+            "split_fallthrough_tail_count": sum(
+                1 for r in rows if r["cost_split_fallthrough_tail"]
+            ),
+            "max_cost_steady_state_static_error": max(
+                (abs(r["cost_steady_state_static_error"]) for r in rows
+                 if r["cost_steady_state_static_error"] is not None),
+                default=0,
+            ),
+            "max_cost_fallthrough_tail_static_error": max(
+                (abs(r["cost_fallthrough_tail_static_error"]) for r in rows
+                 if r["cost_fallthrough_tail_static_error"] is not None),
                 default=0,
             ),
         },

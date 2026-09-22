@@ -175,6 +175,45 @@ TEST_CASE("VsmCostAnalyzer fixture: block repeats expose weighted cost")
     CHECK(contains(json.str(), "\"top_weighted_idle_blocks\""));
 }
 
+TEST_CASE("VsmCostAnalyzer inline: self-backedge fallthrough tails are one-shot")
+{
+    const std::string source =
+        "\t.vu\n"
+        "loop_lid:\n"
+        "                    add.xyz VF01, VF02, VF03        iaddiu VI01, VI01, -1\n"
+        "                    nop                             ibne VI01, VI02, loop_lid\n"
+        "                    nop                             iaddiu VI03, VI03, 1\n"
+        "                    nop                             sq.xyz VF01, 0(VI04)\n"
+        "                    nop                             nop\n"
+        "done_lid:\n"
+        "                    nop                             xgkick VI05\n";
+
+    vcl::VsmCostAnalyzer analyzer;
+    REQUIRE(analyzeString(source, "fallthrough_tail_inline.vsm", analyzer));
+    analyzer.setBlockRepeat("loop_lid", 4);
+
+    std::ostringstream text;
+    REQUIRE(analyzer.writeText(text));
+    CHECK(textMetric(text.str(), "static_cycles") == 6);
+    CHECK(textMetric(text.str(), "weighted_static_cycles") == 15);
+    CHECK(textMetric(text.str(), "weighted_estimated_total_cycles") == 15);
+    CHECK(textMetric(text.str(), "weighted_instructions") == 18);
+    CHECK(textMetric(text.str(), "affine_static_base_cycles") == 3);
+    CHECK(textMetric(text.str(), "affine_static_loop_cycles") == 3);
+    CHECK(contains(text.str(), "loop_lid: cycles=3 repeat=4 weighted_cycles=12"));
+    CHECK(contains(text.str(), "loop_lid__FALLTHROUGH: cycles=2 repeat=1 weighted_cycles=2"));
+
+    std::ostringstream json;
+    REQUIRE(analyzer.writeJson(json));
+    CHECK(jsonMetric(json.str(), "weighted_static_cycles") == 15);
+    CHECK(contains(json.str(),
+                   "\"label_order\": [\"loop_lid\", \"loop_lid__FALLTHROUGH\", \"done_lid\"]"));
+    CHECK(contains(json.str(),
+                   "\"loop_lid\": {\"canonical_label\": \"loop_lid\", \"affine_role\": \"loop\", \"repeat\": 4, \"static_cycles\": 3"));
+    CHECK(contains(json.str(),
+                   "\"loop_lid__FALLTHROUGH\": {\"canonical_label\": \"loop_lid__FALLTHROUGH\", \"affine_role\": \"base\", \"repeat\": 1, \"static_cycles\": 2"));
+}
+
 TEST_CASE("VsmCostAnalyzer inline: affine cost separates setup, loop, and teardown")
 {
     const std::string source =
@@ -268,6 +307,39 @@ TEST_CASE("VsmCostAnalyzer inline: ps2gl preset labels match SCE optimized main 
     CHECK(textMetric(text.str(), "static_cycles") == 2);
     CHECK(textMetric(text.str(), "weighted_static_cycles") == 8);
     CHECK(contains(text.str(), "EXPL_vu1_general_quad_pp4_vcl_xform_loop_lid__MAIN_LOOP: cycles=2 repeat=4 weighted_cycles=8"));
+}
+
+TEST_CASE("VsmCostAnalyzer inline: SCE main-loop fallthrough tails stay one-shot")
+{
+    const std::string label =
+        "EXPL_vu1_general_quad_pp4_vcl_xform_loop_lid__MAIN_LOOP";
+    const std::string source =
+        "\t.vu\n"
+        + label + ":\n"
+        "                    add.xyz VF01, VF02, VF03        iaddiu VI01, VI01, -1\n"
+        "                    nop                             ibne VI01, VI02, "
+        + label + "\n"
+        "                    nop                             nop\n"
+        "                    nop                             sq.xyz VF01, 0(VI04)\n"
+        "done_lid:\n"
+        "                    nop                             xgkick VI05\n";
+
+    vcl::VsmCostAnalyzer analyzer;
+    REQUIRE(analyzeString(source, "sce_fallthrough_tail_inline.vsm", analyzer));
+    analyzer.setBlockRepeat("xform_loop_lid", 4);
+
+    std::ostringstream text;
+    REQUIRE(analyzer.writeText(text));
+    CHECK(textMetric(text.str(), "static_cycles") == 5);
+    CHECK(textMetric(text.str(), "weighted_static_cycles") == 14);
+    CHECK(contains(text.str(), label + ": cycles=3 repeat=4 weighted_cycles=12"));
+    CHECK(contains(text.str(),
+                   label + "__FALLTHROUGH: cycles=1 repeat=1 weighted_cycles=1"));
+
+    std::ostringstream json;
+    REQUIRE(analyzer.writeJson(json));
+    CHECK(contains(json.str(),
+                   "\"canonical_label\": \"xform_loop_lid__FALLTHROUGH\", \"affine_role\": \"base\", \"repeat\": 1"));
 }
 
 TEST_CASE("VsmCostAnalyzer inline: fast-family SCE transform loops canonicalize to xform")

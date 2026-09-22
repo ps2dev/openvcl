@@ -180,6 +180,7 @@ VsmCostAnalyzer::Slot::Slot()
 	tBit = false;
 	latency = 0;
 	throughput = 0;
+	branchDelaySlots = 0;
 	unit = UNIT_UNKNOWN;
 }
 
@@ -259,6 +260,9 @@ void VsmCostAnalyzer::reset()
 	m_pReadyCycle = 0;
 	m_fdivIssueReadyCycle = 0;
 	m_efuIssueReadyCycle = 0;
+	m_backedgeDelaySlotsRemaining = 0;
+	m_backedgeBlockIndex = 0;
+	m_splitAfterBackedgeDelay = false;
 }
 
 void VsmCostAnalyzer::setBlockRepeat( const std::string& label, unsigned int repeat )
@@ -370,6 +374,24 @@ bool VsmCostAnalyzer::analyzeLine( const std::string& line, unsigned int lineNum
 	if( stripped.empty() || isDirective( stripped ) )
 		return true;
 
+	/*
+	 * A textual label block may contain the fallthrough path after its own
+	 * backedge.  Keep the architectural delay slots with the repeated loop body,
+	 * then start an internal one-shot block for any following unlabeled rows.
+	 * If a real label already started a new block, no synthetic split is needed.
+	 */
+	if( m_backedgeDelaySlotsRemaining > 0 && m_currentBlock != m_backedgeBlockIndex )
+	{
+		m_backedgeDelaySlotsRemaining = 0;
+		m_splitAfterBackedgeDelay = false;
+	}
+	if( m_splitAfterBackedgeDelay )
+	{
+		if( m_currentBlock == m_backedgeBlockIndex )
+			startBlock( fallthroughTailLabel( m_blocks[m_currentBlock].label ) );
+		m_splitAfterBackedgeDelay = false;
+	}
+
 	Slot upper;
 	Slot lowerSlot;
 	std::string reason;
@@ -380,7 +402,38 @@ bool VsmCostAnalyzer::analyzeLine( const std::string& line, unsigned int lineNum
 		m_error = message.str();
 		return false;
 	}
+	const unsigned int cycleBlockIndex = m_currentBlock;
+	unsigned int selfBackedgeDelaySlots = 0;
+	bool hasSelfBackedge = false;
+	if( upper.unit == UNIT_BRANCH
+	    && branchTextTargetsLabel( upper.text, m_blocks[cycleBlockIndex].label ) )
+	{
+		hasSelfBackedge = true;
+		selfBackedgeDelaySlots = upper.branchDelaySlots;
+	}
+	if( lowerSlot.unit == UNIT_BRANCH
+	    && branchTextTargetsLabel( lowerSlot.text, m_blocks[cycleBlockIndex].label ) )
+	{
+		hasSelfBackedge = true;
+		selfBackedgeDelaySlots =
+		    std::max( selfBackedgeDelaySlots, lowerSlot.branchDelaySlots );
+	}
+
+	const bool consumesBackedgeDelay =
+	    m_backedgeDelaySlotsRemaining > 0 && m_currentBlock == m_backedgeBlockIndex;
 	recordCycle( upper, lowerSlot );
+	if( consumesBackedgeDelay )
+	{
+		--m_backedgeDelaySlotsRemaining;
+		if( m_backedgeDelaySlotsRemaining == 0 )
+			m_splitAfterBackedgeDelay = true;
+	}
+	if( hasSelfBackedge )
+	{
+		m_backedgeBlockIndex = cycleBlockIndex;
+		m_backedgeDelaySlotsRemaining = selfBackedgeDelaySlots;
+		m_splitAfterBackedgeDelay = selfBackedgeDelaySlots == 0;
+	}
 	return true;
 }
 
@@ -479,6 +532,7 @@ bool VsmCostAnalyzer::parseSlot( const std::string& line, std::string::size_type
 	slot.unit = classifyMnemonic( mnemonic );
 	slot.latency = instructionLatency( mnemonic );
 	slot.throughput = instructionThroughput( mnemonic );
+	slot.branchDelaySlots = info->branchDelaySlots;
 	slot.nop = slot.unit == UNIT_NOP;
 	const std::string flags = lower( word );
 	slot.eBit = flags.find( "[e" ) != std::string::npos;
@@ -873,7 +927,18 @@ VsmCostAnalyzer::WeightedBlock VsmCostAnalyzer::emptyWeightedBlock( const std::s
 std::string VsmCostAnalyzer::canonicalBlockLabel( const std::string& label )
 {
 	static const char kMainLoopSuffix[] = "__MAIN_LOOP";
+	static const char kFallthroughSuffix[] = "__FALLTHROUGH";
 	static const char kVclMarker[] = "_vcl_";
+
+	const std::string::size_type fallthroughLength = sizeof(kFallthroughSuffix) - 1;
+	if( label.size() > fallthroughLength
+	    && label.compare( label.size() - fallthroughLength,
+	                      fallthroughLength,
+	                      kFallthroughSuffix ) == 0 )
+	{
+		const std::string base = label.substr( 0, label.size() - fallthroughLength );
+		return canonicalBlockLabel( base ) + kFallthroughSuffix;
+	}
 
 	const std::string::size_type suffix = label.find( kMainLoopSuffix );
 	if( suffix == std::string::npos )
@@ -1921,6 +1986,32 @@ bool VsmCostAnalyzer::writesP( const std::string& mnemonic )
 {
 	const VuInstructionInfo* info = findVuInstructionInfo( mnemonic );
 	return info && (info->flags & VU_INSTR_WRITES_P);
+}
+
+bool VsmCostAnalyzer::branchTextTargetsLabel( const std::string& text,
+                                              const std::string& label )
+{
+	if( text.empty() || label.empty() )
+		return false;
+
+	const std::string stripped = trim( text );
+	std::string target;
+	const std::string::size_type comma = stripped.rfind( ',' );
+	if( comma != std::string::npos )
+		target = trim( stripped.substr( comma + 1 ) );
+	else
+	{
+		const std::string mnemonic = firstWord( stripped );
+		if( mnemonic.empty() || mnemonic.size() >= stripped.size() )
+			return false;
+		target = trim( stripped.substr( mnemonic.size() ) );
+	}
+	return target == label;
+}
+
+std::string VsmCostAnalyzer::fallthroughTailLabel( const std::string& label )
+{
+	return label + "__FALLTHROUGH";
 }
 
 bool VsmCostAnalyzer::isDirective( const std::string& line )

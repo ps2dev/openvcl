@@ -184,10 +184,15 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    iteración prueba específicamente que el drain no aplica un incremento extra.
    Múltiples accesos incrementales, predecrementos, branches incompatibles,
    escrituras adicionales o lecturas posteriores de la base permanecen
-   bloqueados. En el corpus actual,
-   `indexed` pasa de 32340 ciclos ponderados estimados sin pipeline a **31874**
-   con la ruta genérica; el agregado default queda en **258325** frente a 100870
-   Sony. Son estimaciones estáticas, no una medición de rendimiento PS2.
+   bloqueados. La corrección posterior del cost-model cambia las cifras sin
+   cambiar el VSM: `indexed` queda en **30686** default frente a **30558** sin
+   pipeline, y el agregado default en **242881** frente a 100870 Sony. El valor
+   anterior 31874/32340 multiplicaba colas fallthrough de una sola ejecución por
+   el repeat del loop. El soporte guardado sigue siendo semánticamente válido,
+   pero bajo el estimador corregido no es rentable: su `xform_loop_lid` tiene
+   87 ciclos estáticos steady-state frente a 88 sin pipeline, pero **95**
+   estimados frente a **94** por stalls, además de 23 ciclos de prólogo y 6 de
+   drain. Son estimaciones estáticas, no una medición de rendimiento PS2.
 5. **Límites del estimador y discrepancia planner/emisor cuantificada.** No
    recorre dinámicamente el CFG: pondera bloques de un recorrido textual y
    modela esperas Q/P. `tools/analyze_ps2gl_no_q_rewrites.py` muestra que los
@@ -208,14 +213,20 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    `branchDelayDiscount` para separar ambos efectos; siguen siendo diagnóstico y
    no un gate de scheduling.
    Además, el analizador separa explícitamente `steady_state_static_cycles` de
-   `fallthrough_tail_static_cycles`. En los 19 casos la partición reconstruye
-   exactamente el bloque estático de `VsmCostAnalyzer` (error máximo **0**); la
-   cola de salida máxima es **6 ciclos** y explica 50 -> 56 y 11 -> 17. El preset
-   histórico sigue ponderando el bloque textual completo, incluida esa cola de
-   una sola ejecución, de modo que 56/17 y los agregados ponderados de arriba son
-   útiles como línea base histórica pero **no son coste steady-state por
-   iteración**. Ninguna de estas cifras demuestra ausencia de hazards ni equivale
-   a tiempo real de PS2.
+   `fallthrough_tail_static_cycles`. `VsmCostAnalyzer` reconoce ahora el
+   self-backedge del bloque, mantiene su delay slot dentro del cuerpo repetido y
+   abre un bloque interno `__FALLTHROUGH` para las filas unlabeled posteriores,
+   que se pondera una sola vez. En los 19 casos no-Q, el coste del steady-state y
+   el de la cola coinciden por separado con la caracterización del VSM
+   (errores máximos **0/0**); la cola máxima sigue siendo **6 ciclos**.
+   Los 52 VSM de las cuatro variantes son bit a bit idénticos a
+   `postincrement-prefix-002`: esta es una corrección de métrica, no de
+   codegen. El agregado default pasa de 258325 a **242881**, no-pipeline de
+   297385 a **279565**, y Sony permanece en **100870**. El resultado revela que
+   optimizar solo filas estáticas puede ser contraproducente cuando aumentan
+   stalls, por lo que el siguiente gate de rentabilidad debe incorporar el coste
+   estimado del main y los costes one-shot. Ninguna de estas cifras demuestra
+   ausencia de hazards ni equivale a tiempo real de PS2.
 6. **Detección de instrucciones desconocidas corregida.** El parser de costes
    consume los slots según el número de operandos descrito por
    `VuInstructionInfo`, acepta etiquetas inline y expresiones con espacios, y
@@ -230,7 +241,7 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    sección `loop_candidates` del dump JSON/texto publica forma del bucle,
    productores/consumidores Q, memoria, autoincrementos, XGKICK y ahora también
    labels/branches internos, salidas y backedges anidados. La suite queda en
-   **436 casos**. Tras habilitar los casos seguros de autoincremento se recompilan
+   **438 casos**. Tras habilitar los casos seguros de autoincremento se recompilan
    y ensamblan los **13 shaders**: solo cambia `indexed_vcl.vsm`; los otros 12
    permanecen bit a bit idénticos a la baseline `default`.
 
@@ -258,6 +269,13 @@ Ver `tools/README.md`. Todo está bajo la raíz de OpenVCL:
 - `build/baselines/postincrement-prefix-002/`: baseline final con la transformación
   `LQI -> LQ + iaddiu` de `indexed/xform_loop_lid`; `metadata.json` marca
   `complete=true`, sin fallos, y los 13 renderers ensamblan.
+- `build/baselines/cost-fallthrough-split-001/`: mismos 52 VSM bit a bit que el
+  baseline anterior, reanalizados con las colas post-backedge como coste one-shot;
+  `metadata.json` marca `complete=true` y sin fallos.
+- `build/no-q-rewrites-cost-split.json`: los 19 rewrites no-Q tienen error 0
+  tanto para steady-state como para la cola frente a `VsmCostAnalyzer`.
+- `build/label-invariance-cost-fallthrough-001/results.json`: 13/13 default con
+  instrucciones equivalentes tras renombrar labels y ensamblado correcto.
 - `build/label-invariance-postincrement-002/results.json`: los 13 renderers
   default conservan instrucciones equivalentes tras renombrar labels y todos
   ensamblan.
@@ -274,10 +292,14 @@ ya tiene ejecución runtime automatizada en PCSX2, el ciclo residual y la cola d
 salida ya están caracterizados, `general_quad` dispone de un oráculo
 determinista que coincide con Sony durante 12 frames y
 `indexed/xform_loop_lid` tiene ya un diferencial específico para el
-postincremento del prefijo. El siguiente trabajo general debe ser corregir la
-ponderación del cost-model para que una cola fallthrough de una ejecución no se
-multiplique por el número de iteraciones, o bien abordar los 16 loops no-Q con
-CFG no simple mediante soporte explícito multi-exit/nested-loop. No eliminar
+postincremento del prefijo. La ponderación de las colas fallthrough ya está
+corregida. Esa corrección hace visible un problema más inmediato que ampliar
+CFG: el rewrite de `indexed/xform_loop_lid` reduce una fila estática pero
+aumenta el coste steady-state estimado y añade prólogo/drain. El siguiente hito
+debe cerrar un gate general de rentabilidad basado en el coste estimado del plan
+completo frente al original, manteniendo el preset de 100 iteraciones solo como
+diagnóstico del corpus. Después abordar los 16 loops no-Q con CFG no simple
+mediante soporte explícito multi-exit/nested-loop. No eliminar
 `simpleCountedLoop` como atajo.
 `bestCyclesInContext` queda por ahora estrictamente diagnóstico: no usarlo como
 gate hasta que el modelo total de prólogo/main/drain esté cerrado. No usar nombres

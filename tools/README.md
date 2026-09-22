@@ -77,10 +77,14 @@ python3 tools/analyze_ps2gl_no_q_rewrites.py \
 The report separates the cyclic-prefix selector's isolated baseline/best cycle
 estimate, its diagnostic prolog-to-main in-context estimate before and after the
 branch-delay discount, the emitted steady-state VSM rows through the backedge
-delay slot, and the one-shot fallthrough rows that happen to share the same
-textual label block. It also reports the `VsmCostAnalyzer` label block as
-separate static and estimated cycles and checks that
-`steady_state + fallthrough_tail == label_block_static`.
+delay slot, and the one-shot fallthrough rows that follow it. `VsmCostAnalyzer`
+keeps the architectural backedge delay slots in the repeated block and exposes
+subsequent unlabeled rows as a synthetic `<label>__FALLTHROUGH` block with
+repeat 1. The report recombines both pieces for compatibility with the old
+textual-block metric and separately checks
+`cost_steady_state_static_error` and `cost_fallthrough_tail_static_error`.
+Both should be zero for the accepted corpus rewrites; the summary also publishes
+`split_fallthrough_tail_count` and the maximum errors.
 `selector_prefix_in_branch_delay` and `selector_branch_delay_discount` make the
 selector's branch-delay heuristic explicit when investigating residual
 planner/emitter gaps. None of these values are PS2 runtime measurements or

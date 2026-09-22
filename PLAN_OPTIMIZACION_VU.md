@@ -173,6 +173,26 @@ procedencia verificada. Es el primer hito ejecutable.
    informe estructural auxiliar. Añadir checks reales sin depender de
    `WILL_FAIL`. Incorporar el repro de quads/ADC y escenarios de `general_quad`.
 
+El cost-model ya separa una frontera que el preset de loops trataba mal: cuando
+un bloque contiene un branch de vuelta a su propia etiqueta, las ranuras de
+delay siguen formando parte del cuerpo repetido, pero las filas unlabeled que
+siguen al delay slot pertenecen al camino fallthrough de salida y se contabilizan
+una sola vez mediante un bloque interno `__FALLTHROUGH`. La caracterización de
+los 19 rewrites no-Q reproduce ahora exactamente tanto el steady-state como la
+cola (error estático máximo 0 en ambos), y los 52 VSM de las cuatro variantes
+permanecen bit a bit iguales al baseline anterior. El agregado de 100 repeticiones
+cambia por la métrica, no por codegen: default 258325 -> **242881**, no-pipeline
+297385 -> **279565**, con Sony en 100870.
+
+Esta corrección también invalida una conclusión local anterior: `indexed`
+queda en **30686** default frente a **30558** sin pipeline. En
+`xform_loop_lid`, el rewrite guardado reduce filas steady-state 88 -> 87 pero
+sube el coste estimado 94 -> 95, además de prólogo/drain. Es un resultado del
+modelo estático, no una medición de PS2, pero demuestra que el número de filas
+por sí solo no es un gate de rentabilidad suficiente. Antes de ampliar CFG debe
+cerrarse una comparación general de coste estimado que incluya stalls y costes
+one-shot, sin reglas por nombre de shader ni por el preset de 100 iteraciones.
+
 **Entrega:** métricas con límites explícitos y pruebas diferenciales
 reproducibles. Sin esto, las variantes experimentales no pasan a predeterminadas.
 
@@ -212,11 +232,13 @@ Elegir las primeras optimizaciones por evidencia, no por el nombre del shader.
    de pocas iteraciones, restos, ramas, delay slots y límites de memoria.
    No adelantar cargas más allá de entradas válidas ni duplicar stores,
    actualizaciones de punteros o efectos de `xgkick`.
-6. Evaluar rentabilidad con coste total, incluyendo arranque, salida y tamaño.
-   El criterio experimental actual `refitII < origII` es insuficiente para
-   demostrar una mejora de ejecución completa. Para tamaños desconocidos,
-   usar una política general conservadora o selección por tamaño con coste
-   de la guarda incluido.
+6. Evaluar rentabilidad con coste total, incluyendo arranque, salida, stalls y
+   tamaño. El criterio experimental actual basado en filas/ciclos estáticos
+   puede aceptar un main una fila más corto que, sin embargo, tenga mayor coste
+   estimado por esperas; `indexed/xform_loop_lid` es el repro actual. Para
+   tamaños desconocidos, usar una política general conservadora o selección por
+   tamaño con coste de la guarda incluido. El preset de 100 iteraciones sirve
+   para análisis del corpus, no debe convertirse en una constante de codegen.
 7. Ampliar cobertura incrementalmente: cadenas Q múltiples, P/EFU, aliasing
    afín demostrable y bucles más complejos, únicamente si los diagnósticos
    muestran que justifican el trabajo. El primer caso seguro de autoincremento

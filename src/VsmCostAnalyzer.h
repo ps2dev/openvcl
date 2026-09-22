@@ -99,6 +99,7 @@ private:
 		bool tBit;
 		unsigned int latency;
 		unsigned int throughput;
+		unsigned int branchDelaySlots;
 		std::string text;
 		std::string mnemonic;
 		Unit unit;
@@ -211,6 +212,8 @@ private:
 	static unsigned int instructionThroughput( const std::string& mnemonic );
 	static bool writesQ( const std::string& mnemonic );
 	static bool writesP( const std::string& mnemonic );
+	static bool branchTextTargetsLabel( const std::string& text, const std::string& label );
+	static std::string fallthroughTailLabel( const std::string& label );
 	static bool isDirective( const std::string& line );
 	static std::string affineExpression( unsigned int baseCycles, unsigned int loopCycles );
 	static std::string jsonEscape( const std::string& text );
@@ -254,6 +257,9 @@ private:
 	unsigned int m_pReadyCycle;
 	unsigned int m_fdivIssueReadyCycle;
 	unsigned int m_efuIssueReadyCycle;
+	unsigned int m_backedgeDelaySlotsRemaining;
+	unsigned int m_backedgeBlockIndex;
+	bool m_splitAfterBackedgeDelay;
 };
 
 }
