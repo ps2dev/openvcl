@@ -3,6 +3,11 @@
 Fecha: 22 de septiembre de 2026. Estado: propuesta para ejecutar posteriormente.
 Esta revisión no implementa optimizaciones ni ejecuta compilaciones o benchmarks.
 
+Actualización de ejecución (2026-09-22): la fase 0 se ha ejecutado y se ha
+iniciado la auditoría de fases 1/2. Resultados, cambios y pasos pendientes en
+[el informe de línea base](reports/2026-09-22-linea-base.md). Los números del
+apartado 2 se conservan como referencia histórica, no como resultados actuales.
+
 ## 1. Objetivo y alcance
 
 Conseguir que los programas generados por OpenVCL sean funcionalmente correctos

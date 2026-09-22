@@ -13,6 +13,8 @@ t2-output
 
 # CMake out-of-source builds
 /build/
+/build-*/
+/tools/__pycache__/
 test/build/
 
 # Legacy Makefile artefacts (no longer generated)
