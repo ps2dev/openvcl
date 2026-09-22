@@ -1,0 +1,314 @@
+# Plan de optimización general de OpenVCL
+
+Fecha: 22 de septiembre de 2026. Estado: propuesta para ejecutar posteriormente.
+Esta revisión no implementa optimizaciones ni ejecuta compilaciones o benchmarks.
+
+## 1. Objetivo y alcance
+
+Conseguir que los programas generados por OpenVCL sean funcionalmente correctos
+y alcancen un rendimiento similar o superior a las referencias de Sony, por
+renderer y carga de trabajo, mediante transformaciones generales del compilador.
+No se exige igualdad textual, de registros, etiquetas o histogramas.
+
+El trabajo principal estará en `/Users/fjtrujy/Projects/openvcl` (la ruta existente;
+`openvlc` en la petición parece una errata). Los otros repositorios son
+`/Users/fjtrujy/Projects/masp` y `/Users/fjtrujy/Projects/ps2gl`.
+MASP debe preservar el significado del preprocesado; ps2gl aporta el corpus y
+la integración. No modificar sus shaders para facilitar artificialmente la comparación.
+
+La primera meta es VU1, que es donde están las 13 referencias. El CMake actual
+de ps2gl define `NO_VU0_VECTORS` y `NO_ASM`: estos resultados no demostrarán
+rendimiento ni corrección de VU0. Mantener las abstracciones generales y añadir
+validación específica de VU0 antes de afirmar soporte equivalente.
+
+## 2. Documentación y estado inspeccionados
+
+Se han leído todos los Markdown encontrados en los tres árboles, excluyendo
+los metadatos internos de Git:
+
+- OpenVCL: `README.md`, `CHANGELOG.md`, `test/repro/README.md`.
+- MASP: `CLAUDE.md`.
+- ps2gl: `README.md`, `CMAKE_BUILD.md`.
+
+No se encontraron archivos `AGENTS.md` en estos repositorios ni en los
+ancestros comprobados. También se revisaron los CMake, el preprocesado de
+ps2gl, su comparador VSM y los puntos de entrada del planificador/emisor.
+Los tres árboles estaban limpios al iniciar la revisión.
+
+| Repositorio | Commit inspeccionado |
+|---|---|
+| openvcl | `a5867c3daf03828806ee966aca4116622da3f671` |
+| masp | `ddb4fa5fb1546e74662979a4e417217c27201c3f` |
+| ps2gl | `881fbae441c69ef1c8b40316e4054b670d364abc` |
+
+### Hallazgos que afectan al plan
+
+1. **Ya existe una base considerable.** `VuInstructionInfo`,
+   `VuTokenResourceAccess`, `VuSchedulingRules`, `VuLatencyTracker` y
+   `VuSchedulerAnalysis` modelan instrucciones, recursos, dependencias y
+   planificación. Hay software pipelining genérico activado por defecto.
+2. **El código está más avanzado que parte de la documentación.** Existen
+   planificación modular, tabla de reservas, layouts de kernel, renombrado y
+   replanificación con operaciones añadidas en `VuModuloReservationTable.*`,
+   `VuKernelLayout.*` y `VuSchedulerAnalysis.*`. Las rutas experimentales se
+   controlan mediante `OPENVCL_USE_GENERIC_KERNEL_REWRITE` y
+   `OPENVCL_USE_EXPANDED_DDG_PLACER`. Hay comentarios históricos que aún dicen
+   «diagnostic-only» pese a existir consumidores: verificar las llamadas reales.
+   La ruta genérica actual también selecciona emisión tipada sin necesitar
+   explícitamente `--strict-schedule-slots`.
+3. **Existen atajos específicos incompatibles con este objetivo.**
+   `--enable-known-loop-optimizations` activa emisores para formas de ps2gl,
+   incluyendo reconocimiento de `xform_loop_lid`. Están desactivados por defecto.
+   Deben permanecer excluidos de toda medición y solución aceptada.
+4. **La compilación predeterminada de ps2gl mezcla procedencias.**
+   `PS2GL_USE_SCE_VSM_FOR` contiene `general_quad` por defecto. Es obligatorio
+   vaciarlo en la variante OpenVCL. Su comentario documenta un problema visual
+   previo, cuya vigencia debe comprobarse, no darse por resuelta ni por actual.
+5. **Hay 13 referencias, con una excepción de nombre.** Doce son
+   `vu1/sce_<renderer>_vcl.vsm`; la de `scei` es `vu1/scei_vcl.vsm`.
+6. **El comparador no prueba equivalencia.** `cmake/vsm_diff.py` compara
+   histogramas y etiquetas; sus CTest están marcados `WILL_FAIL TRUE` y omiten
+   `scei`. Una suite verde con esos tests no prueba corrección del compilador.
+7. **La regeneración incremental puede usar resultados antiguos.** El paso de
+   compilación VCL declara como dependencia el `_pp4.vcl`, pero no el binario
+   OpenVCL. Revisar también las dependencias de macros/includes y MASP.
+8. **El entorno necesita una compilación inicial.** Se encontraron `dvp-as` y
+   el toolchain CMake en PS2DEV; no estaban los binarios locales `openvcl` ni
+   `masp/build/src/masp` en las rutas comprobadas. No se ha validado todavía
+   la disponibilidad de PCSX2, hardware o dependencias para todos los ejemplos.
+
+El README publica esta línea base histórica; **no es una medición de esta revisión**:
+
+| Métrica agregada | Sony | OpenVCL |
+|---|---:|---:|
+| Ciclos estáticos | 6308 | 5268 |
+| Ciclos estimados | 6820 | 5838 |
+| Ciclos estáticos ponderados | 100358 | 334938 |
+| Ciclos estimados ponderados | 100870 | 373227 |
+
+La hipótesis principal es que el solapamiento entre iteraciones y la presión
+de registros explican buena parte de la diferencia en los bucles frecuentes.
+Debe confirmarse por renderer; menos instrucciones totales no implica menor
+coste de ejecución.
+
+## 3. Reglas de generalidad y criterios de éxito
+
+- Ninguna transformación decidirá por nombre de archivo, etiqueta, hash,
+  renderer o parecido con una referencia. Sony se usa como comparación externa,
+  nunca como fuente de instrucciones durante la compilación.
+- Las decisiones se justificarán por dependencias, recursos, flujo de control,
+  aliasing, vidas de valores y rentabilidad. Si faltan pruebas de seguridad,
+  conservar el camino genérico seguro.
+- El preset de costes `ps2gl` puede usarse para informes, pero no para decidir
+  optimizaciones. Renombrar etiquetas no debe cambiar las decisiones del compilador.
+- Cada nueva regla debe superar casos sintéticos independientes, variaciones
+  de nombres/registros/offsets y casos negativos donde aplicarla sería incorrecto.
+- Corrección antes que rendimiento: mismos resultados observables en memoria,
+  control de flujo, flags relevantes y paquetes GIF. No exigir igualdad de
+  registros temporales muertos. No introducir reasociaciones de coma flotante
+  o aproximaciones numéricas sin un contrato explícito; conservar inicialmente
+  la semántica de las operaciones.
+- Medir por cada uno de los 13 renderers. Una mejora agregada no compensa una
+  regresión individual. Distinguir regresiones respecto al OpenVCL anterior del
+  déficit todavía pendiente respecto a Sony.
+- Meta final: coste por trabajo equivalente no superior a Sony en la matriz
+  acordada, con corrección demostrada y sin exceder los límites de microprograma.
+  Documentar cualquier caso pendiente; no declarar el objetivo cumplido solo
+  por una media o una estimación favorable.
+
+## 4. Fases de ejecución
+
+### Fase 0 — Línea base reproducible y compilación totalmente abierta
+
+1. Registrar commits, versiones, rutas absolutas de herramientas, opciones,
+   variables experimentales y hashes de entradas, intermedios y salidas.
+2. Compilar OpenVCL y MASP locales y ejecutar sus suites existentes.
+3. Crear dos builds separados de ps2gl: OpenVCL puro y referencias Sony.
+   Fallar si el primero usa herramientas propietarias, VSM Sony u objetos
+   precompilados. Vaciar `PS2GL_USE_SCE_VSM_FOR` explícitamente.
+4. Generar un manifiesto de 13 pares, incluyendo la excepción `scei`, y
+   conservar `_pp1` a `_pp4`, VSM, objetos ensamblados y logs.
+5. Corregir dependencias de regeneración de CMake; hasta entonces usar
+   directorios nuevos o regeneración explícita de derivados tras cada cambio.
+6. Comparar variantes: genérica predeterminada, sin software pipelining,
+   kernel experimental y kernel con replanificación expandida. No activar
+   todas simultáneamente sin aislar su efecto. Las variables leídas con
+   `getenv(...) != NULL` deben eliminarse para desactivarlas: asignar `0`
+   también las activa.
+
+**Entrega:** script reproducible y manifiesto/informe por renderer, con
+procedencia verificada. Es el primer hito ejecutable.
+
+### Fase 1 — Métricas y oráculo de corrección
+
+1. Auditar `VsmCostAnalyzer`: cobertura de instrucciones, latencias, waits,
+   estado entre bloques y tratamiento de prólogo, bucle, epílogo y ramas.
+   Contrastar las reglas de hardware con documentación primaria antes de
+   cambiarlas. No relajar latencias únicamente porque mejora una tabla.
+2. Presentar tamaño en bytes, ciclos del kernel, ocupación de ambas tuberías,
+   esperas Q/P, coste de arranque/salida y presión de registros por separado.
+3. Normalizar por trabajo real: vértices/primitivas procesados por iteración,
+   factores de desenrollado, número de luces y caminos ejecutados. El preset
+   de 100 repeticiones por etiqueta es diagnóstico, no un perfil de ejecución.
+4. Usar `C(n) = B + K*n` solo cuando representa el camino y unidad de trabajo;
+   incorporar restos y caminos cortos si hay desenrollado. Probar tamaños
+   pequeños y grandes, límites de buffer y valores alrededor del número de
+   etapas. Una entrada de cero elementos se prueba solo donde el contrato la
+   admita; en otro caso se valida la guarda del llamador.
+5. Diseñar un harness diferencial con el mismo estado inicial para ambos
+   microprogramas: capturar memoria de salida, paquetes GIF, flags observables
+   y terminación. Reutilizar instrumentación de PCSX2 si está disponible;
+   evaluar un intérprete de un subconjunto VU para tests sintéticos solo si
+   falta una vía automatizable. Un modelo propio requerirá validación externa.
+6. Sustituir la interpretación de `vsm_diff.py` como prueba semántica por un
+   informe estructural auxiliar. Añadir checks reales sin depender de
+   `WILL_FAIL`. Incorporar el repro de quads/ADC y escenarios de `general_quad`.
+
+**Entrega:** métricas con límites explícitos y pruebas diferenciales
+reproducibles. Sin esto, las variantes experimentales no pasan a predeterminadas.
+
+### Fase 2 — Diagnóstico por bucle y coherencia del planificador
+
+1. Clasificar pérdidas por latencias Q/P, dependencias ACC/flags, aliasing,
+   presión de registros, ramas/delay slots o huecos entre upper/lower.
+2. Reutilizar los diagnósticos de DDG, MII, reservas y kernel existentes.
+   Para cada bucle registrar límite por recursos, límite por recurrencias,
+   intervalo de inicio conseguido y motivo concreto de rechazo o aumento.
+3. Verificar que el VSM emitido respeta el plan elegido: ciclos, pares,
+   latencias, delay slots y estado en las entradas/salidas de bloques.
+   Evitar que un pase posterior destruya el solapamiento previsto.
+4. Auditar liveness en el grafo de control, incluidos backedges y flags;
+   no justificar eliminación de dependencias solo por el orden textual.
+5. Mantener un único conjunto de hechos sobre instrucciones. Corregir
+   discrepancias entre analizador, planificador y emisor con pruebas específicas.
+
+**Entrega:** tabla priorizada de bloqueos y repro mínimo de cada categoría.
+Elegir las primeras optimizaciones por evidencia, no por el nombre del shader.
+
+### Fase 3 — Completar el software pipelining general existente
+
+1. Auditar y reutilizar el planificador modular actual antes de reemplazarlo.
+   Comenzar con bucles de una entrada y salida controlada, inducción conocida
+   y aliasing demostrable. Rechazar inicialmente casos de control no soportados.
+2. Modelar dependencias intra/interiteración, distancias y recursos implícitos:
+   VF por campo, VI, ACC, I, Q/P, MAC/CLIP/STATUS, memoria y barreras pertinentes.
+3. Integrar renombrado por versión/etapa con asignación de registros y valores
+   vivos a entrada/salida. Contabilizar MOVEs, operaciones divididas y
+   materializaciones antes de decidir la rentabilidad. Mantener registros
+   explícitos y restricciones de interfaz.
+4. Replanificar el grafo expandido con las operaciones añadidas. Buscar un
+   intervalo de inicio legal dentro de un presupuesto determinista; aumentar
+   el intervalo o abandonar si no caben recursos/registros.
+5. Emitir prólogo, kernel y drenaje desde el plan validado. Resolver caminos
+   de pocas iteraciones, restos, ramas, delay slots y límites de memoria.
+   No adelantar cargas más allá de entradas válidas ni duplicar stores,
+   actualizaciones de punteros o efectos de `xgkick`.
+6. Evaluar rentabilidad con coste total, incluyendo arranque, salida y tamaño.
+   El criterio experimental actual `refitII < origII` es insuficiente para
+   demostrar una mejora de ejecución completa. Para tamaños desconocidos,
+   usar una política general conservadora o selección por tamaño con coste
+   de la guarda incluido.
+7. Ampliar cobertura incrementalmente: cadenas Q múltiples, P/EFU, aliasing
+   afín demostrable y bucles más complejos, únicamente si los diagnósticos
+   muestran que justifican el trabajo.
+
+**Entrega:** mejoras por categoría de bucle, cada una con casos positivos,
+negativos y diferenciales; fallback seguro cuando la transformación no es legal.
+
+### Fase 4 — Afinado local y asignación de registros
+
+Tras medir lo anterior, mejorar prioridades de camino crítico, emparejamiento,
+movimiento de memoria con aliasing probado, eliminación de dependencias falsas
+mediante renombrado y ocupación de delay slots. Reutilizar los mecanismos ya
+existentes y limitar el crecimiento de código y el tiempo de compilación.
+No dedicar semanas a reducir NOPs de bloques fríos mientras persista el déficit
+en los bucles calientes. Las correcciones de seguridad locales sí son prioritarias.
+
+**Entrega:** ganancias adicionales verificadas sin regresión del corpus completo.
+
+### Fase 5 — Validación de integración y cierre
+
+1. Ensamblar los 13 microprogramas con `dvp-as`; comprobar tamaño, alineación,
+   límites de memoria y protocolo de carga/terminación.
+2. Ejecutar ejemplos con entradas/cámara/semillas fijas: geometría visible y
+   recortada, culling, quads/triángulos, iluminación/especular, texturas,
+   variantes indexed/scei y tamaños frontera. Confirmar qué renderer se usó.
+3. Comparar capturas y buffers; una captura correcta es un smoke test,
+   no la totalidad de la prueba semántica.
+4. Medir en PS2 real si se dispone de ella, separando coste VU de CPU, DMA y
+   GS cuando sea posible. Repetir ejecuciones y publicar dispersión. El tiempo
+   de pared de PCSX2/JIT no equivale automáticamente a ciclos de PS2.
+5. Incorporar a CI tests de corrección, ensamblado, determinismo y límites de
+   coste por shader respecto a una línea base versionada. Mantener separado
+   el objetivo Sony de los checks de no regresión durante el desarrollo.
+6. Promover las rutas experimentales solo después de superar estas pruebas.
+   Actualizar README y changelog; retirar o aislar claramente los emisores
+   específicos para impedir que se confundan con resultados generales.
+
+**Entrega final:** informe reproducible antes/después, resultados por renderer
+ y carga, comandos y artefactos, mejoras generales explicadas y limitaciones
+pendientes. Si no hay hardware, identificar expresamente la validación de
+rendimiento real como pendiente.
+
+## 5. Comandos iniciales propuestos
+
+Estos comandos son para la ejecución posterior, no se han ejecutado al redactar
+el plan. Usar directorios nuevos si ya existen con otra configuración.
+
+```sh
+export PS2DEV=/Users/fjtrujy/toolchains/ps2/ps2dev
+export PS2SDK="$PS2DEV/ps2sdk"
+export GSKIT="$PS2DEV/gsKit"
+export PATH="$PATH:$PS2DEV/bin:$PS2DEV/ee/bin:$PS2DEV/iop/bin:$PS2DEV/dvp/bin:$PS2SDK/bin"
+
+cmake -S /Users/fjtrujy/Projects/openvcl \
+  -B /Users/fjtrujy/Projects/openvcl/build-plan \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DBUILD_EXAMPLES=OFF
+cmake --build /Users/fjtrujy/Projects/openvcl/build-plan -j8
+ctest --test-dir /Users/fjtrujy/Projects/openvcl/build-plan --output-on-failure
+
+cmake -S /Users/fjtrujy/Projects/masp \
+  -B /Users/fjtrujy/Projects/masp/build-plan \
+  -DCMAKE_BUILD_TYPE=Release -DENABLE_ASAN=OFF
+cmake --build /Users/fjtrujy/Projects/masp/build-plan -j8
+ctest --test-dir /Users/fjtrujy/Projects/masp/build-plan --output-on-failure
+
+cmake -S /Users/fjtrujy/Projects/ps2gl \
+  -B /Users/fjtrujy/Projects/ps2gl/build-plan-openvcl \
+  -DOPENVCL_FOUND=/Users/fjtrujy/Projects/openvcl/openvcl \
+  -DMASP_FOUND=/Users/fjtrujy/Projects/masp/build-plan/src/masp \
+  -DPS2GL_USE_SCE_VSM=OFF -DPS2GL_USE_SCE_VSM_FOR:STRING= \
+  -DBUILD_EXAMPLES=OFF
+cmake --build /Users/fjtrujy/Projects/ps2gl/build-plan-openvcl \
+  --target vu1_objects -j8
+
+cmake -S /Users/fjtrujy/Projects/ps2gl \
+  -B /Users/fjtrujy/Projects/ps2gl/build-plan-sce \
+  -DPS2GL_USE_SCE_VSM=ON -DPS2GL_USE_SCE_VSM_FOR:STRING= \
+  -DBUILD_EXAMPLES=OFF
+cmake --build /Users/fjtrujy/Projects/ps2gl/build-plan-sce \
+  --target vu1_objects -j8
+```
+
+La compilación host de OpenVCL escribe el ejecutable en la raíz del repositorio
+incluso con build separado: tenerlo en cuenta al comparar versiones.
+Preparar después un manifiesto `pairs.txt` con rutas absolutas Sony/candidato
+y ejecutar `--cost-compare-list-markdown --cost-loop-preset ps2gl`.
+Los checks `--cost-compare-list-check` permiten comprobar métricas individuales;
+registrar inicialmente sus fallos contra Sony como déficits, sin ocultarlos.
+
+Para los ejemplos completos, comprobar primero `ps2stuff` y las bibliotecas
+instaladas en `$PS2SDK/ports`. Es una dependencia de integración, no un cuarto
+repositorio de optimización salvo que aparezca un bloqueo demostrado.
+
+## 6. Orden y tamaño de los cambios
+
+Orden recomendado: fase 0 → fase 1 → fase 2 → fase 3 → fase 4 → fase 5,
+con validación funcional continua desde fase 1. Dividir cada mejora en cambios
+revisables: repro y evidencia, regla general, pruebas y comparación completa.
+Mantener las rutas experimentales separadas hasta validarlas.
+
+El primer trabajo posterior debe producir la línea base pura de los 13 pares,
+confirmar el estado funcional de `general_quad` y ordenar los bloqueos por
+coste. Ese informe decidirá qué parte del planificador modular completar primero;
+no se fija todavía una promesa de mejora ni un calendario sin esas mediciones.
