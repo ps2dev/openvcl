@@ -286,6 +286,14 @@ Ver `tools/README.md`. Todo está bajo la raíz de OpenVCL:
   tras el gate.
 - `build/runtime/general-quad-oracle-profitability-gate-001/`: el renderer
   `linear, quads` mantiene 12/12 frames semánticamente iguales a Sony en PCSX2.
+- `build/baselines/acc-fields-001/`: baseline completo tras modelar `ACC` por
+  componentes. Los 13 renderers y las cuatro variantes compilan/ensamblan,
+  `metadata.json` marca `complete=true` y sin fallos; el agregado default queda
+  en **232571** ciclos estimados.
+- `build/label-invariance-acc-fields-001/`: 13/13 checks default pasan con el
+  modelo por componentes de `ACC`.
+- `build/runtime/general-quad-acc-fields-001/`: `general_quad` mantiene 12/12
+  frames semánticamente iguales a Sony en PCSX2 tras el cambio de dependencias.
 - `build-plan/Testing/Temporary/LastTest.log` y el equivalente en
   `../masp/build-plan/`: pruebas de las herramientas.
 
@@ -319,6 +327,18 @@ fixtures que necesiten forzar la transformación semántica.
 El siguiente hito es abordar los 16 loops no-Q con CFG no simple mediante
 soporte explícito multi-exit/nested-loop. No eliminar `simpleCountedLoop` como
 atajo y no usar nombres de shaders para tomar decisiones.
+
+Antes de ese hito se corrigió una dependencia artificial importante: `ACC`
+deja de tratarse como un único recurso monolítico y ahora sus dependencias
+RAW/WAR/WAW respetan las máscaras X/Y/Z/W. Esto permite reordenar operaciones
+sobre componentes disjuntos sin debilitar dependencias reales. El cambio afecta
+7 de los 13 VSM default y reduce el agregado estático de **241331** a
+**232571** ciclos estimados; sigue siendo una estimación, no una medida de
+hardware. El detector del emisor especializado de luz direccional también se
+hizo independiente del orden de dos productos sobre la normal: identifica las
+rutas diffuse/specular por sus consumidores en vez de por el orden textual.
+La suite queda en **442 casos** y `general_quad` continúa validando 12/12
+frames frente a Sony.
 
 No alterar latencias de hardware ni habilitar un pase experimental para conseguir
 una tabla favorable. No considerar ensamblado, invariancia de nombres o capturas

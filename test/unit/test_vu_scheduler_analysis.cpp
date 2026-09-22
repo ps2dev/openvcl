@@ -293,6 +293,24 @@ TEST_CASE("VuSchedulerAnalysis: dependency graph uses register and resource desc
     CHECK(hasEdge(edges, 4u, 5u, vcl::VU_DEPENDENCY_MEMORY));
 }
 
+TEST_CASE("VuSchedulerAnalysis: dependency graph keeps disjoint ACC fields independent")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("adday.z acc, vf01, vf02"));
+    REQUIRE(program.parse("addax.w acc, vf03, vf04"));
+    REQUIRE(program.parse("maddx.z vf05, vf06, vf07"));
+
+    std::vector<vcl::VuBasicBlock> blocks = vcl::buildVuBasicBlocks(program.tokenizer.tokens());
+    REQUIRE(blocks.size() == 1u);
+
+    std::vector<vcl::VuDependencyEdge> edges =
+        vcl::buildVuDependencyGraph(blocks[0], vcl::VU_RESOURCE_MAC);
+    CHECK(!hasEdge(edges, 0u, 1u, vcl::VU_DEPENDENCY_RESOURCE_WAW));
+    CHECK(hasEdge(edges, 0u, 2u, vcl::VU_DEPENDENCY_RESOURCE_RAW));
+    CHECK(!hasEdge(edges, 1u, 2u, vcl::VU_DEPENDENCY_RESOURCE_RAW));
+}
+
 TEST_CASE("VuSchedulerAnalysis: loop candidates find LoopCS back-edge loops")
 {
     vcl::Error::ResetErrorCount();

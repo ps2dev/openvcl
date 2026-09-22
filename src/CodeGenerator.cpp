@@ -6467,6 +6467,8 @@ bool CodeGenerator::collectDirLightSpecLoopPipelinePattern( std::list<Token>::it
 	bool haveAdd = false;
 	bool haveStore = false;
 	unsigned int specPowerCount = 0;
+	std::vector<std::string> normalProductRegs;
+	std::vector<std::string> normalProductInputs;
 
 	for( std::list<Token>::iterator i = begin; i != end; ++i )
 	{
@@ -6557,18 +6559,10 @@ bool CodeGenerator::collectDirLightSpecLoopPipelinePattern( std::list<Token>::it
 			if( !getRegisterArgKey(token, 0, dst) || !getRegisterArgKey(token, 1, left)
 			    || !getRegisterArgKey(token, 2, right) )
 				return false;
-			if( right == pattern.normalReg && !haveDiffuseMul )
+			if( right == pattern.normalReg )
 			{
-				pattern.diffProductReg = dst;
-				pattern.lightDirReg = left;
-				haveDiffuseMul = true;
-				continue;
-			}
-			if( right == pattern.normalReg && haveDiffuseMul && !haveSpecMul )
-			{
-				pattern.specProductReg = dst;
-				pattern.halfAngleReg = left;
-				haveSpecMul = true;
+				normalProductRegs.push_back( dst );
+				normalProductInputs.push_back( left );
 				continue;
 			}
 			return false;
@@ -6580,8 +6574,15 @@ bool CodeGenerator::collectDirLightSpecLoopPipelinePattern( std::list<Token>::it
 			std::string src;
 			if( !getRegisterArgKey(token, 0, dst) || !getRegisterArgKey(token, 1, src) )
 				return false;
-			if( src != pattern.specProductReg )
+			std::vector<std::string>::const_iterator product =
+			    std::find( normalProductRegs.begin(), normalProductRegs.end(), src );
+			if( product == normalProductRegs.end() )
 				return false;
+			const unsigned int productIndex =
+			    static_cast<unsigned int>( product - normalProductRegs.begin() );
+			pattern.specProductReg = src;
+			pattern.halfAngleReg = normalProductInputs[productIndex];
+			haveSpecMul = true;
 			pattern.specSwizzleReg = dst;
 			haveSpecMr32 = true;
 			continue;
@@ -6590,8 +6591,17 @@ bool CodeGenerator::collectDirLightSpecLoopPipelinePattern( std::list<Token>::it
 		if( mnemonic == vuInstr(VU_OP_ADDA) && token.broadcast() == Token::Y && tokenHasFields(token, Token::Z) )
 		{
 			std::string src;
-			if( !getRegisterArgKey(token, 1, src) || src != pattern.diffProductReg )
+			if( !getRegisterArgKey(token, 1, src) )
 				return false;
+			std::vector<std::string>::const_iterator product =
+			    std::find( normalProductRegs.begin(), normalProductRegs.end(), src );
+			if( product == normalProductRegs.end() )
+				return false;
+			const unsigned int productIndex =
+			    static_cast<unsigned int>( product - normalProductRegs.begin() );
+			pattern.diffProductReg = src;
+			pattern.lightDirReg = normalProductInputs[productIndex];
+			haveDiffuseMul = true;
 			haveDiffuseAdday = true;
 			continue;
 		}

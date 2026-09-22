@@ -99,6 +99,44 @@ namespace
 		addImplicitFlagWriterBarrierEdges( edges, pendingWriters, preserveLiveOutWriter );
 	}
 
+	void addPreciseAccumulatorDependencies( std::vector<VuDependencyEdge>& edges,
+	                                        const std::vector<VuTokenResourceAccess>& accesses,
+	                                        unsigned int ignoredImplicitWawResources )
+	{
+		for( unsigned int field = Token::X; field <= Token::W; field <<= 1 )
+		{
+			std::vector<unsigned int> pendingWriters;
+			const bool preserveLiveOutWriter =
+			    (ignoredImplicitWawResources & VU_RESOURCE_ACC) == 0;
+			for( unsigned int index = 0; index < accesses.size(); ++index )
+			{
+				const bool readsField =
+				    (accesses[index].implicitReads & VU_RESOURCE_ACC) != 0
+				    && (accesses[index].accReadFields & field) != 0;
+				const bool writesField =
+				    (accesses[index].implicitWrites & VU_RESOURCE_ACC) != 0
+				    && (accesses[index].accWriteFields & field) != 0;
+				if( readsField )
+				{
+					if( !pendingWriters.empty() )
+					{
+						addImplicitFlagWriterBarrierEdges( edges, pendingWriters, true );
+						addEdge( edges,
+						         pendingWriters.back(),
+						         index,
+						         VU_DEPENDENCY_RESOURCE_RAW );
+					}
+					pendingWriters.clear();
+				}
+				if( writesField )
+					pendingWriters.push_back( index );
+			}
+			addImplicitFlagWriterBarrierEdges( edges,
+			                                    pendingWriters,
+			                                    preserveLiveOutWriter );
+		}
+	}
+
 	bool memoryOrderRequiresDependency( const VuTokenResourceAccess& beforeAccess,
 	                                    const VuTokenResourceAccess& afterAccess,
 	                                    const Token& before,
@@ -1578,6 +1616,269 @@ namespace
 		if( (double)recmiiInt + 1e-6 < recmiiFract ) ++recmiiInt;
 		if( recmiiInt < 1 ) recmiiInt = 1;
 		return recmiiInt;
+	}
+
+	unsigned int computeLoopRecMIIPrecise( const std::vector<unsigned int>& mt,
+	                                       const std::vector<const Token*>& indexedTokens,
+	                                       bool dropRenamableVfCarried,
+	                                       unsigned int* droppedCarriedEdgesOut )
+	{
+		if( droppedCarriedEdgesOut )
+			*droppedCarriedEdgesOut = 0;
+		const unsigned int n = static_cast<unsigned int>( mt.size() );
+		if( n == 0 )
+			return 1;
+
+		std::vector< std::vector<std::string> > nodeWrites( n ), nodeReads( n );
+		for( unsigned int k = 0; k < n; ++k )
+		{
+			if( mt[k] >= indexedTokens.size() )
+				continue;
+			VuTokenResourceAccess access;
+			if( !buildVuTokenResourceAccess( *indexedTokens[mt[k]], access ) )
+				continue;
+			for( std::list<std::string>::const_iterator i = access.registerWrites.begin();
+			     i != access.registerWrites.end(); ++i )
+				nodeWrites[k].push_back( *i );
+			for( std::list<std::string>::const_iterator i = access.registerReads.begin();
+			     i != access.registerReads.end(); ++i )
+				nodeReads[k].push_back( *i );
+			const unsigned int iw = access.implicitWrites;
+			const unsigned int ir = access.implicitReads;
+			static const char* accFieldNames = "xyzw";
+			if( iw & VU_RESOURCE_ACC )
+			{
+				for( unsigned int field = 0; field < 4; ++field )
+					if( access.accWriteFields & (1u << field) )
+						nodeWrites[k].push_back( std::string("@ACC.") + accFieldNames[field] );
+			}
+			if( iw & VU_RESOURCE_Q )    nodeWrites[k].push_back( "@Q" );
+			if( iw & VU_RESOURCE_P )    nodeWrites[k].push_back( "@P" );
+			if( iw & VU_RESOURCE_R )    nodeWrites[k].push_back( "@R" );
+			if( iw & VU_RESOURCE_I )    nodeWrites[k].push_back( "@I" );
+			if( iw & VU_RESOURCE_MAC )  nodeWrites[k].push_back( "@MAC" );
+			if( iw & VU_RESOURCE_CLIP ) nodeWrites[k].push_back( "@CLIP" );
+			if( ir & VU_RESOURCE_ACC )
+			{
+				for( unsigned int field = 0; field < 4; ++field )
+					if( access.accReadFields & (1u << field) )
+						nodeReads[k].push_back( std::string("@ACC.") + accFieldNames[field] );
+			}
+			if( ir & VU_RESOURCE_Q )    nodeReads[k].push_back( "@Q" );
+			if( ir & VU_RESOURCE_P )    nodeReads[k].push_back( "@P" );
+			if( ir & VU_RESOURCE_R )    nodeReads[k].push_back( "@R" );
+			if( ir & VU_RESOURCE_I )    nodeReads[k].push_back( "@I" );
+			if( ir & VU_RESOURCE_MAC )  nodeReads[k].push_back( "@MAC" );
+			if( ir & VU_RESOURCE_CLIP ) nodeReads[k].push_back( "@CLIP" );
+		}
+
+		std::vector<std::string> resources;
+		std::vector<std::string> rotatedBases;
+		for( unsigned int k = 0; k < n; ++k )
+		{
+			for( unsigned int i = 0; i < nodeWrites[k].size(); ++i )
+				if( std::find( resources.begin(), resources.end(), nodeWrites[k][i] ) == resources.end() )
+					resources.push_back( nodeWrites[k][i] );
+			for( unsigned int i = 0; i < nodeReads[k].size(); ++i )
+				if( std::find( resources.begin(), resources.end(), nodeReads[k][i] ) == resources.end() )
+					resources.push_back( nodeReads[k][i] );
+			if( dropRenamableVfCarried
+			    && mt[k] < indexedTokens.size()
+			    && indexedTokens[mt[k]]->operand()
+			    && vuOpIsSplittableForKernelRenameByName(
+			           indexedTokens[mt[k]]->operand()->name() ) )
+			{
+				for( unsigned int i = 0; i < nodeWrites[k].size(); ++i )
+				{
+					const std::string base = registerBaseKey( nodeWrites[k][i] );
+					if( !base.empty()
+					    && base[0] != '@'
+					    && (base[0] == 'V' || base[0] == 'v')
+					    && std::find( rotatedBases.begin(), rotatedBases.end(), base )
+					       == rotatedBases.end() )
+						rotatedBases.push_back( base );
+				}
+			}
+		}
+
+		std::vector<unsigned int> eFrom, eTo, eDist;
+		std::vector<int> eLat;
+		for( std::vector<std::string>::const_iterator resource = resources.begin();
+		     resource != resources.end(); ++resource )
+		{
+			const std::string resourceBase = registerBaseKey( *resource );
+			const bool dropCarried =
+			    dropRenamableVfCarried
+			    && std::find( rotatedBases.begin(), rotatedBases.end(), resourceBase )
+			       != rotatedBases.end();
+			std::vector<unsigned int> writers;
+			std::vector<unsigned int> readers;
+			for( unsigned int k = 0; k < n; ++k )
+			{
+				if( std::find( nodeWrites[k].begin(), nodeWrites[k].end(), *resource ) != nodeWrites[k].end() )
+					writers.push_back( k );
+				if( std::find( nodeReads[k].begin(), nodeReads[k].end(), *resource ) != nodeReads[k].end() )
+					readers.push_back( k );
+			}
+			if( resource->compare( 0, 5, "@ACC." ) == 0
+			    && std::getenv( "OPENVCL_DUMP_NO_Q_LOOP_MII" ) != NULL
+			    && !dropRenamableVfCarried )
+			{
+				std::cerr << "[no-q-acc-events] writers=";
+				for( unsigned int w = 0; w < writers.size(); ++w )
+					std::cerr << (w ? "," : "")
+					          << writers[w] << ":"
+					          << lowerVuTokenName( *indexedTokens[mt[writers[w]]] );
+				std::cerr << " readers=";
+				for( unsigned int r = 0; r < readers.size(); ++r )
+					std::cerr << (r ? "," : "")
+					          << readers[r] << ":"
+					          << lowerVuTokenName( *indexedTokens[mt[readers[r]]] );
+				std::cerr << "\n";
+			}
+			if( writers.empty() )
+				continue;
+
+			for( std::vector<unsigned int>::const_iterator read = readers.begin();
+			     read != readers.end(); ++read )
+			{
+				unsigned int writer = writers.back();
+				unsigned int distance = 1;
+				for( std::vector<unsigned int>::const_iterator candidate = writers.begin();
+				     candidate != writers.end() && *candidate < *read; ++candidate )
+				{
+					writer = *candidate;
+					distance = 0;
+				}
+				if( mt[writer] >= indexedTokens.size() || mt[*read] >= indexedTokens.size() )
+					continue;
+				VuLatencyTracker tracker;
+				tracker.reset();
+				tracker.recordWrites( *indexedTokens[mt[writer]], 0 );
+				const int delay =
+				    tracker.readHazardDelay( *indexedTokens[mt[*read]], NULL, 0 );
+				if( distance == 1 && dropCarried )
+				{
+					if( droppedCarriedEdgesOut )
+						++*droppedCarriedEdgesOut;
+				}
+				else
+				{
+					eFrom.push_back( writer );
+					eTo.push_back( *read );
+					eDist.push_back( distance );
+					eLat.push_back( delay > 0 ? delay : 1 );
+				}
+			}
+
+			const bool deadImplicitFlag =
+			    (*resource == "@MAC" || *resource == "@CLIP") && readers.empty();
+			if( !deadImplicitFlag )
+			{
+				for( unsigned int w = 0; w < writers.size(); ++w )
+				{
+					const unsigned int writer = writers[w];
+					const unsigned int previous = w == 0 ? writers.back() : writers[w - 1];
+					const unsigned int distance = w == 0 ? 1 : 0;
+					if( distance == 1 && dropCarried )
+					{
+						if( droppedCarriedEdgesOut )
+							++*droppedCarriedEdgesOut;
+					}
+					else
+					{
+						eFrom.push_back( previous );
+						eTo.push_back( writer );
+						eDist.push_back( distance );
+						eLat.push_back( 1 );
+					}
+				}
+			}
+
+			for( std::vector<unsigned int>::const_iterator write = writers.begin();
+			     write != writers.end(); ++write )
+			{
+				unsigned int previousWriter = writers.back();
+				for( std::vector<unsigned int>::const_iterator candidate = writers.begin();
+				     candidate != writers.end() && *candidate < *write; ++candidate )
+					previousWriter = *candidate;
+				for( std::vector<unsigned int>::const_iterator read = readers.begin();
+				     read != readers.end(); ++read )
+				{
+					const bool sameIteration =
+					    previousWriter < *write
+					    ? (*read > previousWriter && *read < *write)
+					    : (*read < *write);
+					const bool previousIteration =
+					    previousWriter >= *write && *read > previousWriter;
+					if( !sameIteration && !previousIteration )
+						continue;
+					const unsigned int distance = previousIteration ? 1 : 0;
+					if( distance == 1 && dropCarried )
+					{
+						if( droppedCarriedEdgesOut )
+							++*droppedCarriedEdgesOut;
+					}
+					else
+					{
+						eFrom.push_back( *read );
+						eTo.push_back( *write );
+						eDist.push_back( distance );
+						eLat.push_back( 1 );
+					}
+				}
+			}
+		}
+
+		if( eFrom.empty() )
+			return 1;
+		const unsigned int edgeCount = static_cast<unsigned int>( eFrom.size() );
+		double hi = 1.0;
+		for( unsigned int e = 0; e < eLat.size(); ++e )
+			hi += static_cast<double>( eLat[e] );
+		double lo = 0.0;
+		std::vector<double> distances( n, 0.0 );
+		for( int iteration = 0; iteration < 60; ++iteration )
+		{
+			const double midpoint = 0.5 * (lo + hi);
+			for( unsigned int v = 0; v < n; ++v )
+				distances[v] = 0.0;
+			for( unsigned int pass = 0; pass < n; ++pass )
+			{
+				bool changed = false;
+				for( unsigned int e = 0; e < edgeCount; ++e )
+				{
+					const double weight =
+					    static_cast<double>( eLat[e] )
+					    - midpoint * static_cast<double>( eDist[e] );
+					const double next = distances[eFrom[e]] + weight;
+					if( next > distances[eTo[e]] + 1e-12 )
+					{
+						distances[eTo[e]] = next;
+						changed = true;
+					}
+				}
+				if( !changed )
+					break;
+			}
+			bool positiveCycle = false;
+			for( unsigned int e = 0; e < edgeCount && !positiveCycle; ++e )
+			{
+				const double weight =
+				    static_cast<double>( eLat[e] )
+				    - midpoint * static_cast<double>( eDist[e] );
+				if( distances[eFrom[e]] + weight > distances[eTo[e]] + 1e-9 )
+					positiveCycle = true;
+			}
+			if( positiveCycle )
+				lo = midpoint;
+			else
+				hi = midpoint;
+		}
+		unsigned int result = static_cast<unsigned int>( lo );
+		if( static_cast<double>( result ) + 1e-6 < lo )
+			++result;
+		return result < 1 ? 1 : result;
 	}
 
 	// Track 9.G step 1c-1 (diagnostic): rename-aware RecMII.
@@ -4838,6 +5139,44 @@ namespace
 
 		const unsigned int baselineCycles =
 		    scheduledLoopBodyCycles( originalTokenIndices, indexedTokens );
+		if( std::getenv( "OPENVCL_DUMP_NO_Q_LOOP_MII" ) != NULL )
+		{
+			const unsigned int recmii = computeLoopRecMII( originalTokenIndices, indexedTokens );
+			const unsigned int preciseRecmii =
+			    computeLoopRecMIIPrecise( originalTokenIndices,
+			                              indexedTokens,
+			                              false,
+			                              NULL );
+			unsigned int preciseDroppedCarriedEdges = 0;
+			const unsigned int preciseRenamedRecmii =
+			    computeLoopRecMIIPrecise( originalTokenIndices,
+			                              indexedTokens,
+			                              true,
+			                              &preciseDroppedCarriedEdges );
+			const unsigned int resmii = computeLoopResMII( originalTokenIndices, indexedTokens );
+			unsigned int droppedCarriedEdges = 0;
+			const unsigned int renamedRecmii =
+			    computeLoopRecMIIRenamed( originalTokenIndices,
+			                              indexedTokens,
+			                              &droppedCarriedEdges );
+			std::cerr << "[no-q-loop-mii] loop=" << loop.label
+			          << " bodySize=" << originalTokenIndices.size()
+			          << " scheduledCycles=" << baselineCycles
+			          << " recmii=" << recmii
+			          << " preciseRecmii=" << preciseRecmii
+			          << " resmii=" << resmii
+			          << " preciseMii="
+			          << (preciseRecmii > resmii ? preciseRecmii : resmii)
+			          << " preciseRenamedRecmii=" << preciseRenamedRecmii
+			          << " preciseRenamedMii="
+			          << (preciseRenamedRecmii > resmii ? preciseRenamedRecmii : resmii)
+			          << " preciseDroppedCarriedEdges=" << preciseDroppedCarriedEdges
+			          << " mii=" << (recmii > resmii ? recmii : resmii)
+			          << " renamedRecmii=" << renamedRecmii
+			          << " renamedMii=" << (renamedRecmii > resmii ? renamedRecmii : resmii)
+			          << " droppedCarriedEdges=" << droppedCarriedEdges
+			          << "\n";
+		}
 		unsigned int bestCycles = baselineCycles;
 		VuLoopPipelineOpportunity bestCandidate;
 		bool bestStartsWithStore = false;
@@ -6416,7 +6755,12 @@ std::vector<VuDependencyEdge> buildVuDependencyGraph( const VuBasicBlock& block,
 
 			if( a.implicitWrites & b.implicitReads & pairwiseImplicitResources )
 				addEdge( edges, before, after, VU_DEPENDENCY_RESOURCE_RAW );
-			if( a.implicitReads & b.implicitWrites )
+			unsigned int implicitWar =
+			    a.implicitReads & b.implicitWrites & ~VU_RESOURCE_ACC;
+			if( (a.implicitReads & b.implicitWrites & VU_RESOURCE_ACC) != 0
+			    && (a.accReadFields & b.accWriteFields) != 0 )
+				implicitWar |= VU_RESOURCE_ACC;
+			if( implicitWar != 0 )
 				addEdge( edges, before, after, VU_DEPENDENCY_RESOURCE_WAR );
 			if( (a.implicitWrites & b.implicitWrites & pairwiseImplicitResources
 			     & ~ignoredImplicitWawResources) != 0 )
@@ -6430,10 +6774,9 @@ std::vector<VuDependencyEdge> buildVuDependencyGraph( const VuBasicBlock& block,
 		}
 	}
 
-		addPreciseImplicitFlagDependencies( edges,
-		                                    accesses,
-		                                    VU_RESOURCE_ACC,
-		                                    ignoredImplicitWawResources );
+		addPreciseAccumulatorDependencies( edges,
+		                                   accesses,
+		                                   ignoredImplicitWawResources );
 		addPreciseImplicitFlagDependencies( edges,
 		                                    accesses,
 		                                    VU_RESOURCE_MAC,

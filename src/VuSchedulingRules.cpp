@@ -52,36 +52,44 @@ namespace
 		return (write ? access.implicitWrites : access.implicitReads) & resource;
 	}
 
-	void implicitResources( const Token& token, unsigned int& reads, unsigned int& writes )
+	bool implicitWriteReadConflict( const VuTokenResourceAccess& writer,
+	                                const VuTokenResourceAccess& reader )
 	{
-		VuTokenResourceAccess access;
-		if( buildVuTokenResourceAccess( token, access ) )
+		unsigned int overlap = writer.implicitWrites & reader.implicitReads;
+		if( overlap & VU_RESOURCE_ACC )
 		{
-			reads = access.implicitReads;
-			writes = access.implicitWrites;
-			return;
+			if( (writer.accWriteFields & reader.accReadFields) == 0 )
+				overlap &= ~VU_RESOURCE_ACC;
 		}
+		return overlap != 0;
+	}
 
-		reads = VU_RESOURCE_NONE;
-		writes = VU_RESOURCE_NONE;
+	bool implicitWriteWriteConflict( const VuTokenResourceAccess& a,
+	                                 const VuTokenResourceAccess& b,
+	                                 unsigned int ignoredResources = VU_RESOURCE_NONE )
+	{
+		unsigned int overlap = a.implicitWrites & b.implicitWrites & ~ignoredResources;
+		if( overlap & VU_RESOURCE_ACC )
+		{
+			if( (a.accWriteFields & b.accWriteFields) == 0 )
+				overlap &= ~VU_RESOURCE_ACC;
+		}
+		return overlap != 0;
 	}
 
 	bool hasImplicitPairDependency( const Token& earlier, const Token& later )
 	{
-		unsigned int earlierReads = 0;
-		unsigned int earlierWrites = 0;
-		unsigned int laterReads = 0;
-		unsigned int laterWrites = 0;
-		implicitResources( earlier, earlierReads, earlierWrites );
-		implicitResources( later, laterReads, laterWrites );
+		VuTokenResourceAccess earlierAccess;
+		VuTokenResourceAccess laterAccess;
+		if( !buildVuTokenResourceAccess( earlier, earlierAccess )
+		    || !buildVuTokenResourceAccess( later, laterAccess ) )
+			return false;
 
-		if( earlierWrites & (laterReads | laterWrites) )
+		if( implicitWriteReadConflict( earlierAccess, laterAccess ) )
 			return true;
-
-		if( laterWrites & earlierWrites )
+		if( implicitWriteWriteConflict( earlierAccess, laterAccess ) )
 			return true;
-
-		return (laterWrites & earlierReads) != 0;
+		return implicitWriteReadConflict( laterAccess, earlierAccess );
 	}
 
 	bool memoryBaseRegisterKey( const Token& token, std::string& key )
@@ -596,15 +604,18 @@ bool vuTokenCanMoveBefore( const Token& moved,
 			return false;
 	}
 
-	unsigned int movedReadsImplicit = 0, movedWritesImplicit = 0;
-	unsigned int crossedReadsImplicit = 0, crossedWritesImplicit = 0;
-	implicitResources(moved, movedReadsImplicit, movedWritesImplicit);
-	implicitResources(crossed, crossedReadsImplicit, crossedWritesImplicit);
-	if( movedWritesImplicit & crossedReadsImplicit )
+	VuTokenResourceAccess movedAccess;
+	VuTokenResourceAccess crossedAccess;
+	if( !buildVuTokenResourceAccess( moved, movedAccess )
+	    || !buildVuTokenResourceAccess( crossed, crossedAccess ) )
 		return false;
-	if( crossedWritesImplicit & movedReadsImplicit )
+	if( implicitWriteReadConflict( movedAccess, crossedAccess ) )
 		return false;
-	if( (movedWritesImplicit & crossedWritesImplicit & ~ignoredImplicitWawResources) != 0 )
+	if( implicitWriteReadConflict( crossedAccess, movedAccess ) )
+		return false;
+	if( implicitWriteWriteConflict( movedAccess,
+	                               crossedAccess,
+	                               ignoredImplicitWawResources ) )
 		return false;
 
 	if( vuTokensHaveDataDependency(moved, crossed) || vuTokensHaveDataDependency(crossed, moved) )

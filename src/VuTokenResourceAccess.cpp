@@ -65,6 +65,8 @@ VuTokenResourceAccess::VuTokenResourceAccess()
 	instructionFlags = VU_INSTR_NONE;
 	implicitReads = VU_RESOURCE_NONE;
 	implicitWrites = VU_RESOURCE_NONE;
+	accReadFields = 0;
+	accWriteFields = 0;
 	memoryKind = VU_MEMORY_NONE;
 	memoryFlags = VU_MEMORY_FLAG_NONE;
 	hasMemoryBase = false;
@@ -189,6 +191,19 @@ bool buildVuTokenResourceAccess( const Token& token, VuTokenResourceAccess& acce
 			else
 				access.registerReads.push_back( key );
 		}
+	}
+
+	if( access.implicitReads & VU_RESOURCE_ACC )
+	{
+		access.accReadFields = token.fields();
+		if( access.accReadFields == 0 )
+			access.accReadFields = Token::X | Token::Y | Token::Z | Token::W;
+	}
+	if( access.implicitWrites & VU_RESOURCE_ACC )
+	{
+		access.accWriteFields = token.fields();
+		if( access.accWriteFields == 0 )
+			access.accWriteFields = Token::X | Token::Y | Token::Z | Token::W;
 	}
 
 	return true;

@@ -139,6 +139,22 @@ TEST_CASE("VuSchedulingRules: movement can ignore dead implicit WAW hazards only
                                      vcl::VU_RESOURCE_CLIP));
 }
 
+TEST_CASE("VuSchedulingRules: ACC dependencies respect destination fields")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("adday.z acc, vf01, vf02"));
+    REQUIRE(program.parse("addax.w acc, vf03, vf04"));
+    REQUIRE(program.parse("adday.z acc, vf05, vf06"));
+
+    CHECK(vcl::vuTokenCanMoveBefore(program.token(1),
+                                    program.token(0),
+                                    vcl::VU_RESOURCE_MAC));
+    CHECK(!vcl::vuTokenCanMoveBefore(program.token(2),
+                                     program.token(0),
+                                     vcl::VU_RESOURCE_MAC));
+}
+
 TEST_CASE("VuSchedulingRules: scheduler analysis gates are shared predicates")
 {
     vcl::Error::ResetErrorCount();

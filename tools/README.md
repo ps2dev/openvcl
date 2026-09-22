@@ -67,6 +67,13 @@ counted loops may still be handled by the generic cyclic-prefix rewrite path.
 These counters distinguish a multi-exit loop from an outer loop that contains a
 nested backedge instead of collapsing both into `simple_counted_loop: false`.
 
+For scheduler diagnostics only, `OPENVCL_DUMP_NO_Q_LOOP_MII=1` also prints
+resource/recurrence lower bounds for no-Q cyclic-prefix candidates. The
+`preciseRecmii` values track accumulator lanes independently, while
+`preciseRenamedRecmii` additionally removes loop-carried VF edges that the
+existing rename model can eliminate. These figures are lower-bound diagnostics,
+not measured PS2 cycles and not optimization gates.
+
 Characterize those accepted no-Q rewrites against a completed baseline:
 
 ```sh

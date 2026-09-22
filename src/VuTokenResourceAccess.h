@@ -25,6 +25,8 @@ struct VuTokenResourceAccess
 	unsigned int instructionFlags;
 	unsigned int implicitReads;
 	unsigned int implicitWrites;
+	unsigned int accReadFields;
+	unsigned int accWriteFields;
 	VuMemoryKind memoryKind;
 	unsigned int memoryFlags;
 	bool hasMemoryBase;
