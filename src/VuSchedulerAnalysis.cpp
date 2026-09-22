@@ -3295,28 +3295,12 @@ namespace
 		}
 
 		bool hasDelayedStore = false;
-		unsigned int delayedStoreCount = 0;
 		for( std::vector<VuSoftwarePipelineSuffixStore>::const_iterator store =
 		         opportunity.softwarePipelineSuffixStores.begin();
 		     store != opportunity.softwarePipelineSuffixStores.end(); ++store )
 		{
 			if( store->delayedDrain )
-			{
 				hasDelayedStore = true;
-				++delayedStoreCount;
-			}
-		}
-		if( hasDelayedStore
-		    && delayedStoreCount > 1
-		    && opportunity.memoryLoadCount > 0
-		    && opportunity.qProducerTokenIndices.size() > 1 )
-		{
-			addSuffixStoreDrainBlocker( opportunity, "multi_store_loaded_suffix_stream" );
-			addMultiQPipelineBlocker( opportunity, "multi_store_loaded_suffix_stream" );
-			opportunity.eligibleMultiQSoftwarePipeline = false;
-			opportunity.canEmitMultiQSoftwarePipeline = false;
-			clearSuffixStoreDrainSelection( opportunity.softwarePipelineSuffixStores );
-			hasDelayedStore = false;
 		}
 		if( hasDelayedStore
 		    && opportunity.memoryLoadCount > 0
@@ -10459,6 +10443,19 @@ std::list<Token> applyVuSoftwarePipelinePlans( const std::list<Token>& tokens )
 				else
 					output.push_back( tokenWithoutLabel( *indexedTokens[*p] ) );
 			}
+		}
+		if( rewrite.drainsSuffixStores
+		    && rewrite.cyclicPrefixBeforeBranch
+		    && !rewrite.cyclicPrefixRotations.empty() )
+		{
+			/*
+			 * The peeled first iteration consumes the original loop registers,
+			 * while the cyclic-prefix prolog above writes carried values into
+			 * their scratch rotations.  Steady state performs this handoff at
+			 * the main-loop label; the peeled iteration needs the same handoff
+			 * before its first main-body consumer.
+			 */
+			appendRotationMoves( output, *i, rewrite.cyclicPrefixRotations );
 		}
 
 		if( rewrite.drainsSuffixStores )

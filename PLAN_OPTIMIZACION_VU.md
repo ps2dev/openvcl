@@ -227,6 +227,12 @@ Elegir las primeras optimizaciones por evidencia, no por el nombre del shader.
    transformados tampoco son simples variantes de este caso: seis tienen
    múltiples salidas tempranas y diez son bucles exteriores con un backedge
    anidado. Requieren soporte de CFG explícito antes de cualquier rewrite.
+   Los drains multi-Q cargados con múltiples stores también pueden emitirse
+   cuando los streams de lectura/escritura están separados: la primera
+   iteración pelada debe materializar el handoff de las rotaciones
+   cyclic-prefix antes de su primer consumidor. `general_quad` valida esta
+   frontera durante 12 frames contra Sony en PCSX2. Los streams load/store con
+   la misma base siguen bloqueados por `read_write_memory_stream_conflict`.
 
 **Entrega:** mejoras por categoría de bucle, cada una con casos positivos,
 negativos y diferenciales; fallback seguro cuando la transformación no es legal.

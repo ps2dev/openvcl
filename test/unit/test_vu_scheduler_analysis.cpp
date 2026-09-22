@@ -1970,7 +1970,7 @@ TEST_CASE("VuSchedulerAnalysis: multi-Q suffix drains keep same-base load and st
         CHECK(!i->delayedDrain);
 }
 
-TEST_CASE("VuSchedulerAnalysis: loaded multi-Q multi-store drains wait for value rotation")
+TEST_CASE("VuSchedulerAnalysis: loaded multi-Q multi-store drains rotate separated streams")
 {
     vcl::Error::ResetErrorCount();
     ParsedProgram program;
@@ -2004,17 +2004,23 @@ TEST_CASE("VuSchedulerAnalysis: loaded multi-Q multi-store drains wait for value
         vcl::findVuLoopPipelineOpportunities(program.tokenizer.tokens());
     REQUIRE(opportunities.size() == 1u);
     CHECK(opportunities[0].hasSuffixStoreDrainPlan);
-    CHECK(!opportunities[0].canEmitSuffixStoreDrain);
-    CHECK(!opportunities[0].canEmitMultiQSoftwarePipeline);
-    CHECK(hasString(opportunities[0].suffixStoreDrainBlockers,
-                    "multi_store_loaded_suffix_stream"));
-    CHECK(hasString(opportunities[0].multiQSoftwarePipelineBlockers,
-                    "multi_store_loaded_suffix_stream"));
+    CHECK(opportunities[0].canEmitSuffixStoreDrain);
+    CHECK(opportunities[0].canEmitMultiQSoftwarePipeline);
+    CHECK(!hasString(opportunities[0].suffixStoreDrainBlockers,
+                     "multi_store_loaded_suffix_stream"));
+    CHECK(!hasString(opportunities[0].multiQSoftwarePipelineBlockers,
+                     "multi_store_loaded_suffix_stream"));
 
+    REQUIRE(opportunities[0].softwarePipelineSuffixStores.size() == 2u);
     for (std::vector<vcl::VuSoftwarePipelineSuffixStore>::const_iterator i =
              opportunities[0].softwarePipelineSuffixStores.begin();
          i != opportunities[0].softwarePipelineSuffixStores.end(); ++i)
-        CHECK(!i->delayedDrain);
+        CHECK(i->delayedDrain);
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans =
+        vcl::buildVuSoftwarePipelineRewritePlans(program.tokenizer.tokens());
+    REQUIRE(plans.size() == 1u);
+    CHECK(plans[0].drainsSuffixStores);
 }
 
 TEST_CASE("VuSchedulerAnalysis: generic cyclic prefixes can rotate no-Q counted loops")

@@ -88,30 +88,31 @@ iteración. La comparación dinámica sigue pendiente.
 |---|---:|---:|---:|---:|---:|
 | fast | 1799 | 3064 | 3821 | 4162 | 4162 |
 | fast_nolights | 1327 | 1542 | 3207 | 1932 | 1932 |
-| general | 9050 | 25017 | 29599 | 25293 | 25293 |
-| general_nospec | 6494 | 16923 | 19749 | 17199 | 17199 |
-| general_nospec_quad | 9004 | 21900 | 23395 | 21900 | 21900 |
-| general_nospec_tri | 7813 | 19300 | 20795 | 19300 | 19300 |
-| general_pv_diff | 9035 | 25018 | 29600 | 25294 | 25294 |
-| general_pv_diff_quad | 11865 | 30395 | 33646 | 30395 | 30395 |
-| general_pv_diff_tri | 10353 | 27395 | 30646 | 27395 | 27395 |
-| general_quad | 11560 | 29994 | 33245 | 29994 | 29994 |
-| general_tri | 10367 | 27394 | 30645 | 27394 | 27394 |
-| indexed | 10118 | 32340 | 32340 | 32340 | 32340 |
+| general | 9050 | 25017 | 29599 | 26574 | 26574 |
+| general_nospec | 6494 | 16923 | 19749 | 18486 | 18486 |
+| general_nospec_quad | 9004 | 20804 | 23395 | 20804 | 20804 |
+| general_nospec_tri | 7813 | 18175 | 20795 | 18175 | 18175 |
+| general_pv_diff | 9035 | 25018 | 29600 | 26575 | 26575 |
+| general_pv_diff_quad | 11865 | 29303 | 33646 | 29303 | 29303 |
+| general_pv_diff_tri | 10353 | 26270 | 30646 | 26270 | 26270 |
+| general_quad | 11560 | 28898 | 33245 | 28898 | 28898 |
+| general_tri | 10367 | 26269 | 30645 | 26269 | 26269 |
+| indexed | 10118 | 32345 | 32340 | 32345 | 32345 |
 | scei | 2085 | 5168 | 6697 | 5142 | 5142 |
 
 | Métrica agregada | Sony | Genérico actual |
 |---|---:|---:|
-| Ciclos estáticos | 6308 | 5133 |
-| Ciclos estimados | 6820 | 5575 |
-| Estáticos ponderados | 100358 | 245208 |
-| Estimados ponderados | 100870 | 265450 |
+| Ciclos estáticos | 6308 | 5593 |
+| Ciclos estimados | 6820 | 6049 |
+| Estáticos ponderados | 100358 | 238639 |
+| Estimados ponderados | 100870 | 258796 |
 
 El resultado actual sustituye las cifras históricas del README como línea base
-para esta rama, sin modificar todavía ese documento. El modo experimental
-empeora cinco renderers, mantiene siete e introduce una mejora estimada de 26
-ciclos ponderados en `scei`. La variante expandida da los mismos VSM que el
-kernel en esta ejecución; **no se debe activar por defecto**.
+para esta rama, sin modificar todavía ese documento. Habilitar los drains
+multi-store seguros reduce la estimación ponderada del camino genérico de
+265450 a 258796 ciclos (-6654) respecto a la medición anterior. Es una mejora
+**solo del modelo estático**; no equivale a ciclos medidos ni FPS. La variante
+kernel/expandida sigue siendo experimental y **no se debe activar por defecto**.
 
 Los bytes `.vutext` medidos en los 13 objetos suman 41104 para el modo genérico
 y 50528 para Sony. El objeto genérico mayor ocupa 4080 bytes; la alineación del
@@ -126,7 +127,7 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
 | general | final_loop_lid | 5 | 17 |
 | general | pt_light_vert_loop_lid | 39 | 131 |
 | general | xform_loop_lid | 22 | 43 |
-| general_quad | xform_loop_lid | 47 | 94 |
+| general_quad | xform_loop_lid | 47 | 82 |
 | indexed | dir_light_vert_loop_lid | 18 | 71 |
 | indexed | pt_light_vert_loop_lid | 39 | 151 |
 | indexed | xform_loop_lid | 38 | 100 |
@@ -151,9 +152,17 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    kernel originales frente a 37 tras división/materialización; II 27 → 29.
    En `general`, 31 → 39 operaciones e II 36 → 38. Los gates rechazan esos
    refits, coherente con la ausencia de mejora de la variante expandida.
-3. **Quads:** el diagnóstico de entrada de `xform_loop_lid` informa
-   `multi_store_loaded_suffix_stream` y `read_write_memory_stream_conflict`.
-   No quitar estas barreras sin una prueba de aliasing interiteración.
+3. **Quads/multi-store:** `multi_store_loaded_suffix_stream` era una barrera
+   global demasiado conservadora. Al retirarla apareció un fallo real en la
+   primera iteración pelada: el prefijo cyclic-prefix escribía un valor carried
+   en su scratch, pero el primer consumidor del cuerpo pelado leía el registro
+   base antes del handoff que solo existía en la entrada steady-state. El
+   codegen ahora materializa ese handoff también entre prólogo y cuerpo pelado.
+   Con ello `general_quad` vuelve a coincidir con Sony en los 12 frames del
+   oráculo determinista y los drains de 12 stores del stream de salida pueden
+   emitirse. La protección específica `read_write_memory_stream_conflict`
+   permanece para loads/stores con la misma base; no se ha relajado aliasing
+   ambiguo.
 4. **Indexed/autoincremento:** el rechazo global de cualquier pre/post-incremento
    era demasiado conservador para `indexed/dir_light_vert_loop_lid`. El `SQI`
    postincrementado permanece en el sufijo original y se ejecuta una sola vez;
@@ -228,6 +237,9 @@ Ver `tools/README.md`. Todo está bajo la raíz de OpenVCL:
 - `build/cost-audit/`: tres repros del parser de costes y sus JSON actuales.
 - `build/no-q-rewrites.json`: caracterización reproducible de los 19 rewrites
   cyclic-prefix no-Q aceptados y de las diferencias selector/emisión/bloque.
+- `build/baselines/multistore-handoff/`: baseline posterior al soporte de drains
+  multi-store; los 13 renderers OpenVCL compilan/ensamblan y las cuatro variantes
+  de coste quedan resumidas en `summary.md`.
 - `build-plan/Testing/Temporary/LastTest.log` y el equivalente en
   `../masp/build-plan/`: pruebas de las herramientas.
 
@@ -238,12 +250,14 @@ resumidos; para reproducirlos en otra máquina ejecutar de nuevo las herramienta
 
 Completar fase 1 antes de promover cambios de scheduling: el harness diferencial
 ya tiene ejecución runtime automatizada en PCSX2, el ciclo residual y la cola de
-salida ya están caracterizados y `general_quad` dispone ahora de un oráculo
-determinista que coincide con Sony durante 12 frames. No queda reproducida la
-discrepancia semántica que sugerían las capturas animadas. El siguiente trabajo
-puede volver a cobertura general: aliasing/autoincremento, loops aún no cubiertos
-y, después, corregir la ponderación del cost-model para que una cola fallthrough
-de una ejecución no se multiplique por el número de iteraciones.
+salida ya están caracterizados y `general_quad` dispone de un oráculo
+determinista que coincide con Sony durante 12 frames incluso con los drains
+multi-store de `xform_loop_lid` habilitados. El siguiente candidato de cobertura
+general es `indexed/xform_loop_lid`, cuyo autoincremento está todavía dentro del
+camino transformado, manteniendo separadas las reglas de aliasing demostrado de
+los casos de CFG complejo. Después puede retomarse la ponderación del cost-model
+para que una cola fallthrough de una ejecución no se multiplique por el número
+de iteraciones.
 `bestCyclesInContext` queda por ahora estrictamente diagnóstico: no usarlo como
 gate hasta cerrar ese oráculo runtime. No usar nombres de shaders para tomar
 decisiones.
