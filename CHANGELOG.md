@@ -17,6 +17,9 @@
 - Loop-pipeline diagnostics now also expose every detected loop candidate,
   including loops with no Q producer, while leaving pipeline eligibility and
   emitted code unchanged.
+- Added a ps2gl no-Q rewrite diagnostic that separates cyclic-prefix selector
+  estimates, emitted steady-state loop rows, and label-block cost so planner /
+  emitter and loop-exit accounting gaps can be measured reproducibly.
 - Cost reports now include static cycles, estimated cycles, FDIV/EFU producer
   issue stalls, explicit `waitq`/`waitp` stalls, slot usage, paired cycles,
   NOP slots, per-label block costs, and weighted hot-block rankings.

@@ -60,8 +60,22 @@ complete set of detected loop candidates:
 
 The `loop_candidates` array includes Q producer/consumer counts, loop shape,
 memory accesses, pre/post-increment use, and XGKICK presence. In particular,
-loops with `q_producers: 0` remain visible for scheduling work even though the
-current Q pipeline planner intentionally does not rewrite them.
+loops with `q_producers: 0` remain visible even though they are excluded from
+the Q-specific planner; eligible simple counted loops may still be handled by
+the generic cyclic-prefix rewrite path.
+
+Characterize those accepted no-Q rewrites against a completed baseline:
+
+```sh
+python3 tools/analyze_ps2gl_no_q_rewrites.py \
+  build/baselines/run-001 --output build/no-q-rewrites.json
+```
+
+The report separates the cyclic-prefix selector's isolated baseline/best cycle
+estimate, the number of emitted steady-state VSM rows through the branch delay
+slot, and the label-block cost reported by `VsmCostAnalyzer`. Differences are
+useful for finding planner/emitter and block-accounting mismatches, but none of
+these values are PS2 runtime measurements or semantic-equivalence evidence.
 
 Check label independence against a completed baseline:
 
@@ -77,7 +91,7 @@ Recorded hashes reject mismatching compiler binaries or edited baseline inputs.
 This checks independence from label names; it does not prove correctness,
 independence from arbitrary source changes, or equivalence to Sony output.
 
-Do not rebuild the root OpenVCL binary while either script is running: CMake
+Do not rebuild the root OpenVCL binary while these scripts are running: CMake
 writes it into the source root even when using a separate build directory.
 Keep the result directories outside version control; commit scripts and concise
 reports instead. Run runtime/semantic validation before promoting experiments.

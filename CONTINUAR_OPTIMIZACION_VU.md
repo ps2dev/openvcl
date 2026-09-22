@@ -19,11 +19,13 @@ los 65 informes guardados conservan exactamente sus métricas. Existe
 la ruta pipeline y `--disable-generic-software-pipelining`, y compila hasta ELF.
 Falta ejecutarlo: PS2Link no respondió en la última sesión y PCSX2 sigue sin
 control de escritorio. `general_quad` aún necesita comprobación funcional.
-El dump de loops publica ahora todos los candidatos sin modificar scheduling:
-en los 13 shaders hay 81 loops detectados, **35 sin Q y 46 con Q**; los 13 VSM
-default siguen bit a bit idénticos. Cuando haya runtime, valida primero el
-harness y `general_quad`. Mientras tanto continúa la caracterización de los
-bucles sin Q, coste del renombrado y aliasing/autoincremento. Prohibidos atajos
-por nombres, hashes o shaders conocidos. Distingue estimaciones de tiempos
-reales. Actualiza el informe con avances y deja otro prompt breve si necesitas
-relevo.
+El dump de loops publica 81 candidatos: **35 sin Q y 46 con Q**. La ruta
+cyclic-prefix ya acepta 18 de los no-Q. `tools/analyze_ps2gl_no_q_rewrites.py`
+ha revelado dos sesgos estáticos: hasta 4 ciclos entre el `bestCycles` aislado
+del selector y el loop realmente emitido, y 6 ciclos de cola de salida que el
+coste por label atribuye al loop. Ejemplos `general`: dir-light 63 -> 46
+previstos -> 50 emitidos -> 56 bloque; final 13 -> 7 -> 11 -> 17. No se ha
+cambiado scheduling por este hallazgo. Cuando haya runtime, valida primero el
+harness y `general_quad`; mientras tanto corrige/expón métricas de rentabilidad
+en contexto y después continúa aliasing/autoincremento. Prohibidos atajos por
+nombres, hashes o shaders conocidos. Distingue estimaciones de tiempos reales.

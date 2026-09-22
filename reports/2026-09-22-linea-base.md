@@ -117,15 +117,15 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
 | indexed | pt_light_vert_loop_lid | 39 | 151 |
 | indexed | xform_loop_lid | 38 | 100 |
 
-1. **Bucles sin Q fuera de cobertura de optimización, ahora visibles.** En
+1. **Bucles sin Q parcialmente cubiertos, ahora medibles.** En
    `findVuLoopPipelineOpportunities`, `qProducerCount == 0` sigue descartando
-   el bucle para el planner Q, pero el dump publica ahora todos los
-   `loop_candidates` sin cambiar scheduling. En los 13 VCL preprocesados de
-   ps2gl aparecen **81 candidatos: 35 sin Q y 46 con Q**. Los 35 incluyen
-   repetidamente `dir_light_vert_loop_lid` y `final_loop_lid`, cuyas brechas
-   ya medidas llegan, por ejemplo en `general`, a 56 vs 18 y 17 vs 5 ciclos
-   estimados por iteración frente a Sony. No basta con mejorar únicamente
-   DIV/RSQRT.
+   el bucle para el planner Q, pero `buildGenericCyclicPrefixRewritePlan` ya
+   transforma un subconjunto de bucles simples. En los 13 VCL preprocesados de
+   ps2gl aparecen **81 candidatos: 35 sin Q y 46 con Q**. De los 35 sin Q, la
+   ruta cyclic-prefix acepta actualmente **18 rewrites**: nueve
+   `dir_light_vert_loop_lid` y nueve `final_loop_lid`. El resto incluye bucles
+   no simples y los casos indexed con pre/post-incremento. No basta con mejorar
+   únicamente DIV/RSQRT.
 2. **Coste del renombrado.** Los logs de `fast` muestran 23 operaciones de
    kernel originales frente a 37 tras división/materialización; II 27 → 29.
    En `general`, 31 → 39 operaciones e II 36 → 38. Los gates rechazan esos
@@ -136,11 +136,19 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
 4. **Indexed:** los rechazos incluyen `pre_or_post_increment_memory` y
    `cyclic_prefix_side_effect`. Hace falta modelar explícitamente los efectos
    de actualización de direcciones para ampliar cobertura con seguridad.
-5. **Límites del estimador.** No recorre dinámicamente el CFG: pondera bloques
-   de un recorrido textual y modela esperas Q/P. No demuestra ausencia de
-   hazards VF/VI/ACC/flags ni equivale a ejecución repetida real del bucle.
-   Los dumps de oportunidades se obtienen del análisis de entrada y no deben
-   confundirse con una verificación del VSM final ya asignado.
+5. **Límites del estimador y discrepancia planner/emisor cuantificada.** No
+   recorre dinámicamente el CFG: pondera bloques de un recorrido textual y
+   modela esperas Q/P. `tools/analyze_ps2gl_no_q_rewrites.py` muestra que los
+   18 rewrites no-Q aceptados tienen una diferencia de hasta **4 ciclos** entre
+   el `bestCycles` usado por el selector aislado y las filas del bucle realmente
+   emitido hasta su delay slot. En `general`, `dir_light_vert_loop_lid` pasa de
+   63 ciclos baseline a 46 previstos, pero ocupa 50 ciclos steady-state; para
+   `final_loop_lid`, 13 -> 7 previstos termina en 11. Además, el bloque textual
+   de `VsmCostAnalyzer` añade **6 ciclos de cola de salida** después del backedge
+   en estos casos (50 -> 56 y 11 -> 17), y el preset los pondera junto con el
+   loop. Por tanto, 56/17 siguen siendo útiles como coste estructural histórico,
+   pero no son el II steady-state exacto. Ninguna de estas cifras demuestra
+   ausencia de hazards ni equivale a tiempo real de PS2.
 6. **Detección de instrucciones desconocidas corregida.** El parser de costes
    consume los slots según el número de operandos descrito por
    `VuInstructionInfo`, acepta etiquetas inline y expresiones con espacios, y
@@ -173,6 +181,8 @@ Ver `tools/README.md`. Todo está bajo la raíz de OpenVCL:
 - `build/integration/{openvcl,sce}/examples/`: los seis ELF compilados;
   logs de compilación en `build/integration/{openvcl,sce}.log`.
 - `build/cost-audit/`: tres repros del parser de costes y sus JSON actuales.
+- `build/no-q-rewrites.json`: caracterización reproducible de los 18 rewrites
+  cyclic-prefix no-Q aceptados y de las diferencias selector/emisión/bloque.
 - `build-plan/Testing/Temporary/LastTest.log` y el equivalente en
   `../masp/build-plan/`: pruebas de las herramientas.
 
@@ -183,9 +193,10 @@ resumidos; para reproducirlos en otra máquina ejecutar de nuevo las herramienta
 
 Completar fase 1 antes de promover cambios de scheduling: ejecutar en PS2/PCSX2
 el harness diferencial VU1 ya construido y extender el oráculo a memoria/paquetes
-GIF de `general_quad`. Mientras ese runtime no esté disponible, continuar la
-caracterización no invasiva de los 35 candidatos sin Q y del coste de renombrado,
-sin usar nombres de shaders para tomar decisiones de optimización.
+GIF de `general_quad`. Mientras ese runtime no esté disponible, el siguiente
+trabajo no invasivo es hacer que la rentabilidad del planner mida de forma
+coherente el contexto que verá el emisor y separar la cola de salida del coste
+steady-state de loops, sin usar nombres de shaders para tomar decisiones.
 
 No alterar latencias de hardware ni habilitar un pase experimental para conseguir
 una tabla favorable. No considerar ensamblado, invariancia de nombres o capturas
