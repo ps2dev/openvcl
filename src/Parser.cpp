@@ -14,6 +14,7 @@
 #include "VsmCostAnalyzer.h"
 #include "VuInstructionInfo.h"
 #include "VuSchedulerAnalysis.h"
+#include "VuSchedulingRules.h"
 
 #include <iostream>
 #include <fstream>
@@ -730,6 +731,68 @@ namespace
 		stream << "]";
 	}
 
+	unsigned int countLoopQProducers( const VuLoopCandidate& loop )
+	{
+		unsigned int count = 0;
+		for( std::vector<const Token*>::const_iterator i = loop.bodyTokens.begin(); i != loop.bodyTokens.end(); ++i )
+		{
+			if( *i && vuTokenWritesQ( **i ) )
+				++count;
+		}
+		return count;
+	}
+
+	unsigned int countLoopQConsumers( const VuLoopCandidate& loop )
+	{
+		unsigned int count = 0;
+		for( std::vector<const Token*>::const_iterator i = loop.bodyTokens.begin(); i != loop.bodyTokens.end(); ++i )
+		{
+			if( *i && vuTokenReadsQ( **i ) )
+				++count;
+		}
+		return count;
+	}
+
+	void writeLoopCandidateText( std::ostream& stream, const VuLoopCandidate& loop )
+	{
+		stream << loop.label
+		       << " branch_token=" << loop.branchTokenIndex
+		       << " body_tokens=" << loop.bodyTokens.size()
+		       << " q_producers=" << countLoopQProducers( loop )
+		       << " q_consumers=" << countLoopQConsumers( loop )
+		       << " loop_directive=" << (loop.hasLoopDirective ? "yes" : "no")
+		       << " loop_cs_clid=" << loop.loopCsClid
+		       << " loop_cs_mlid=" << loop.loopCsMlid
+		       << " simple_counted_loop=" << (loop.simpleCountedLoop ? "yes" : "no")
+		       << " memory_loads=" << loop.memoryLoadCount
+		       << " memory_stores=" << loop.memoryStoreCount
+		       << " memory_pre_post_increment=" << (loop.hasMemoryPreOrPostIncrement ? "yes" : "no")
+		       << " xgkick=" << (loop.hasXgkick ? "yes" : "no")
+		       << std::endl;
+	}
+
+	void writeLoopCandidateJson( std::ostream& stream, const VuLoopCandidate& loop )
+	{
+		stream << "    {\n";
+		stream << "      \"label\": "; writeJsonString( stream, loop.label.c_str() ); stream << ",\n";
+		stream << "      \"label_token_index\": " << loop.labelTokenIndex << ",\n";
+		stream << "      \"branch_token_index\": " << loop.branchTokenIndex << ",\n";
+		stream << "      \"first_body_token_index\": " << loop.firstBodyTokenIndex << ",\n";
+		stream << "      \"last_body_token_index\": " << loop.lastBodyTokenIndex << ",\n";
+		stream << "      \"body_token_count\": " << loop.bodyTokens.size() << ",\n";
+		stream << "      \"q_producers\": " << countLoopQProducers( loop ) << ",\n";
+		stream << "      \"q_consumers\": " << countLoopQConsumers( loop ) << ",\n";
+		stream << "      \"loop_directive\": " << (loop.hasLoopDirective ? "true" : "false") << ",\n";
+		stream << "      \"loop_cs_clid\": " << loop.loopCsClid << ",\n";
+		stream << "      \"loop_cs_mlid\": " << loop.loopCsMlid << ",\n";
+		stream << "      \"simple_counted_loop\": " << (loop.simpleCountedLoop ? "true" : "false") << ",\n";
+		stream << "      \"memory_loads\": " << loop.memoryLoadCount << ",\n";
+		stream << "      \"memory_stores\": " << loop.memoryStoreCount << ",\n";
+		stream << "      \"memory_pre_post_increment\": " << (loop.hasMemoryPreOrPostIncrement ? "true" : "false") << ",\n";
+		stream << "      \"xgkick\": " << (loop.hasXgkick ? "true" : "false") << "\n";
+		stream << "    }";
+	}
+
 	const VuSoftwarePipelineRewritePlan* findRewritePlanForOpportunity(
 	    const std::vector<VuSoftwarePipelineRewritePlan>& plans,
 	    const VuLoopPipelineOpportunity& opportunity )
@@ -744,6 +807,7 @@ namespace
 	}
 
 	void writeLoopPipelineInfoText( std::ostream& stream,
+	                                const std::vector<VuLoopCandidate>& loopCandidates,
 	                                const std::vector<VuLoopPipelineOpportunity>& opportunities,
 	                                const std::vector<VuSoftwarePipelineRewritePlan>& rewritePlans )
 	{
@@ -867,9 +931,14 @@ namespace
 			writeStringListText( stream, i->carriedQOutputRegisters );
 			stream << std::endl;
 		}
+
+		stream << std::endl << "OpenVCL VU loop candidates" << std::endl;
+		for( std::vector<VuLoopCandidate>::const_iterator i = loopCandidates.begin(); i != loopCandidates.end(); ++i )
+			writeLoopCandidateText( stream, *i );
 	}
 
 	void writeLoopPipelineInfoJson( std::ostream& stream,
+	                                const std::vector<VuLoopCandidate>& loopCandidates,
 	                                const std::vector<VuLoopPipelineOpportunity>& opportunities,
 	                                const std::vector<VuSoftwarePipelineRewritePlan>& rewritePlans )
 	{
@@ -983,6 +1052,13 @@ namespace
 			stream << "      \"carried_q_input_registers\": "; writeStringListJson( stream, opportunity.carriedQInputRegisters ); stream << ",\n";
 			stream << "      \"carried_q_output_registers\": "; writeStringListJson( stream, opportunity.carriedQOutputRegisters ); stream << "\n";
 			stream << "    }";
+		}
+		stream << "\n  ],\n  \"loop_candidates\": [\n";
+		for( unsigned int i = 0; i < loopCandidates.size(); ++i )
+		{
+			if( i != 0 )
+				stream << ",\n";
+			writeLoopCandidateJson( stream, loopCandidates[i] );
 		}
 		stream << "\n  ]\n}" << std::endl;
 	}
@@ -1715,6 +1791,7 @@ bool Parser::dumpInstructionInfo()
 
 bool Parser::dumpLoopPipelineInfo()
 {
+	const std::vector<VuLoopCandidate> loopCandidates = findVuLoopCandidates( m_tokenizer.tokens() );
 	const std::vector<VuLoopPipelineOpportunity> opportunities = findVuLoopPipelineOpportunities( m_tokenizer.tokens() );
 	const std::vector<VuSoftwarePipelineRewritePlan> rewritePlans = buildVuSoftwarePipelineRewritePlans( m_tokenizer.tokens() );
 
@@ -1728,16 +1805,16 @@ bool Parser::dumpLoopPipelineInfo()
 		}
 
 		if( m_cmdLine.dumpLoopPipelineInfoJson() )
-			writeLoopPipelineInfoJson( output, opportunities, rewritePlans );
+			writeLoopPipelineInfoJson( output, loopCandidates, opportunities, rewritePlans );
 		else
-			writeLoopPipelineInfoText( output, opportunities, rewritePlans );
+			writeLoopPipelineInfoText( output, loopCandidates, opportunities, rewritePlans );
 	}
 	else
 	{
 		if( m_cmdLine.dumpLoopPipelineInfoJson() )
-			writeLoopPipelineInfoJson( std::cout, opportunities, rewritePlans );
+			writeLoopPipelineInfoJson( std::cout, loopCandidates, opportunities, rewritePlans );
 		else
-			writeLoopPipelineInfoText( std::cout, opportunities, rewritePlans );
+			writeLoopPipelineInfoText( std::cout, loopCandidates, opportunities, rewritePlans );
 	}
 
 	setState( EXIT );

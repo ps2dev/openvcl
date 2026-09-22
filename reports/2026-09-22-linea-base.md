@@ -117,10 +117,15 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
 | indexed | pt_light_vert_loop_lid | 39 | 151 |
 | indexed | xform_loop_lid | 38 | 100 |
 
-1. **Bucles sin Q fuera de cobertura.** En
-   `findVuLoopPipelineOpportunities`, `qProducerCount == 0` descarta el bucle.
-   Esto deja fuera bucles de iluminación direccional y salida final con una
-   diferencia importante. No basta con mejorar únicamente DIV/RSQRT.
+1. **Bucles sin Q fuera de cobertura de optimización, ahora visibles.** En
+   `findVuLoopPipelineOpportunities`, `qProducerCount == 0` sigue descartando
+   el bucle para el planner Q, pero el dump publica ahora todos los
+   `loop_candidates` sin cambiar scheduling. En los 13 VCL preprocesados de
+   ps2gl aparecen **81 candidatos: 35 sin Q y 46 con Q**. Los 35 incluyen
+   repetidamente `dir_light_vert_loop_lid` y `final_loop_lid`, cuyas brechas
+   ya medidas llegan, por ejemplo en `general`, a 56 vs 18 y 17 vs 5 ciclos
+   estimados por iteración frente a Sony. No basta con mejorar únicamente
+   DIV/RSQRT.
 2. **Coste del renombrado.** Los logs de `fast` muestran 23 operaciones de
    kernel originales frente a 37 tras división/materialización; II 27 → 29.
    En `general`, 31 → 39 operaciones e II 36 → 38. Los gates rechazan esos
@@ -146,6 +151,11 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    exactamente las mismas métricas; solo cambia el campo de ruta cuando se
    ejecutan desde una ruta relativa. El ensamblado independiente sigue siendo
    obligatorio y tampoco sustituye un validador semántico.
+7. **Observabilidad de bucles sin Q añadida sin alterar codegen.** La nueva
+   sección `loop_candidates` del dump JSON/texto publica forma del bucle,
+   productores/consumidores Q, memoria, autoincrementos y XGKICK. La suite queda
+   en **424 casos**, y una recompilación de los **13 shaders** produce VSM
+   bit a bit idénticos a la baseline `default`.
 
 ## Artefactos locales y reproducción
 
@@ -171,10 +181,11 @@ resumidos; para reproducirlos en otra máquina ejecutar de nuevo las herramienta
 
 ## Siguiente hito
 
-Completar fase 1 antes de promover cambios de scheduling: construir el harness
-diferencial VU1 con estados de entrada idénticos y comparación de memoria/paquetes
-GIF. Confirmar `general_quad` con ambas rutas. Después, priorizar soporte general
-de bucles sin Q y renombrado menos costoso según pruebas, sin usar nombres de shaders.
+Completar fase 1 antes de promover cambios de scheduling: ejecutar en PS2/PCSX2
+el harness diferencial VU1 ya construido y extender el oráculo a memoria/paquetes
+GIF de `general_quad`. Mientras ese runtime no esté disponible, continuar la
+caracterización no invasiva de los 35 candidatos sin Q y del coste de renombrado,
+sin usar nombres de shaders para tomar decisiones de optimización.
 
 No alterar latencias de hardware ni habilitar un pase experimental para conseguir
 una tabla favorable. No considerar ensamblado, invariancia de nombres o capturas

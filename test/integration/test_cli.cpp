@@ -54,6 +54,20 @@ namespace
             "iaddiu vi01, vi01, 1\n"
             "ibne vi01, vi02, loop_lid\n";
     }
+
+    std::string noQPipelineInput()
+    {
+        return
+            "loop_lid:\n"
+            "--LoopCS 1, 1\n"
+            "lq.xyz vf01, 0(vi01)\n"
+            "add.xyz vf02, vf01, vf03\n"
+            "sq.xyz vf02, 0(vi02)\n"
+            "iaddiu vi01, vi01, 1\n"
+            "iaddiu vi02, vi02, 1\n"
+            "isubiu vi03, vi03, 1\n"
+            "ibne vi03, vi00, loop_lid\n";
+    }
 }
 
 TEST_CASE("CLI: --version prints the shared OpenVCL version")
@@ -154,6 +168,26 @@ TEST_CASE("CLI: loop pipeline JSON dump is stable enough for scheduler tooling")
     CHECK(contains(r.stdout_data, "\"rewrite_plan\": {"));
     CHECK(contains(r.stdout_data, "\"available\": false"));
     CHECK(contains(r.stdout_data, "\"carried_q_input_registers\": [\"VF03.x\""));
+}
+
+TEST_CASE("CLI: loop pipeline JSON keeps non-Q loops visible for scheduling analysis")
+{
+    std::vector<std::string> args;
+    args.push_back("-n");
+    args.push_back("--dump-loop-pipeline-info-json");
+
+    ::test::RunResult r = ::test::run_openvcl(args, noQPipelineInput());
+    REQUIRE(r.exit_code == 0);
+    CHECK(r.stderr_data.empty());
+    CHECK(contains(r.stdout_data, "\"loop_candidates\": ["));
+    CHECK(contains(r.stdout_data, "\"label\": \"loop_lid\""));
+    CHECK(contains(r.stdout_data, "\"body_token_count\": 9"));
+    CHECK(contains(r.stdout_data, "\"q_producers\": 0"));
+    CHECK(contains(r.stdout_data, "\"q_consumers\": 0"));
+    CHECK(contains(r.stdout_data, "\"simple_counted_loop\": true"));
+    CHECK(contains(r.stdout_data, "\"memory_loads\": 1"));
+    CHECK(contains(r.stdout_data, "\"memory_stores\": 1"));
+    CHECK(contains(r.stdout_data, "\"loop_pipeline_opportunities\": [\n\n  ]"));
 }
 
 TEST_CASE("CLI: loop pipeline dumps expose emitted rewrite plans")

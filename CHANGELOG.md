@@ -14,6 +14,9 @@
 - Added a PS2 VU1 differential harness that builds the same terminating source
   through the normal software-pipelined path and a conservative no-pipeline
   path, restores identical VU1 memory, and compares output qwords at runtime.
+- Loop-pipeline diagnostics now also expose every detected loop candidate,
+  including loops with no Q producer, while leaving pipeline eligibility and
+  emitted code unchanged.
 - Cost reports now include static cycles, estimated cycles, FDIV/EFU producer
   issue stalls, explicit `waitq`/`waitp` stalls, slot usage, paired cycles,
   NOP slots, per-label block costs, and weighted hot-block rankings.

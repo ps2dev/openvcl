@@ -51,6 +51,18 @@ See the execution report for confirmed limitations. `.vutext` includes
 assembler alignment padding, so its byte size can exceed eight times the
 source instruction-row count.
 
+Loop diagnostics expose both the Q-specific pipeline opportunities and the
+complete set of detected loop candidates:
+
+```sh
+./openvcl --dump-loop-pipeline-info-json preprocessed.vcl
+```
+
+The `loop_candidates` array includes Q producer/consumer counts, loop shape,
+memory accesses, pre/post-increment use, and XGKICK presence. In particular,
+loops with `q_producers: 0` remain visible for scheduling work even though the
+current Q pipeline planner intentionally does not rewrite them.
+
 Check label independence against a completed baseline:
 
 ```sh
