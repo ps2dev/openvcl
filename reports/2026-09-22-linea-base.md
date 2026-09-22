@@ -139,8 +139,14 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    ruta cyclic-prefix acepta actualmente **19 rewrites**: nueve
    `dir_light_vert_loop_lid`, nueve `final_loop_lid` y el
    `indexed/dir_light_vert_loop_lid` con `SQI` postincrementado. Los **16** no-Q
-   restantes son bucles no simples (`adcLoop_lid` y bucles exteriores de luces).
-   No basta con mejorar únicamente DIV/RSQRT.
+   restantes son bucles no simples, pero ya no forman un grupo ambiguo: los
+   **6 `adcLoop_lid`** tienen cuatro branches de salida temprana por iteración
+   (`exit_branches=4`), mientras los **10 `dir_light_loop_lid`** exteriores
+   contienen exactamente un label interno, un branch interno y un backedge
+   anidado (`internal_labels=1`, `internal_branches=1`, `nested_backedges=1`).
+   Por tanto todos los no-Q de una sola salida/backedge detectados en este corpus
+   están cubiertos; los 16 restantes requieren razonamiento de CFG, no quitar el
+   requisito `simpleCountedLoop`. No basta con mejorar únicamente DIV/RSQRT.
 2. **Coste del renombrado.** Los logs de `fast` muestran 23 operaciones de
    kernel originales frente a 37 tras división/materialización; II 27 → 29.
    En `general`, 31 → 39 operaciones e II 36 → 38. Los gates rechazan esos
@@ -198,8 +204,9 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    obligatorio y tampoco sustituye un validador semántico.
 7. **Observabilidad de bucles sin Q añadida sin alterar codegen.** La nueva
    sección `loop_candidates` del dump JSON/texto publica forma del bucle,
-   productores/consumidores Q, memoria, autoincrementos y XGKICK. La suite queda
-   en **428 casos**. Tras habilitar el caso seguro de autoincremento se recompilan
+   productores/consumidores Q, memoria, autoincrementos, XGKICK y ahora también
+   labels/branches internos, salidas y backedges anidados. La suite queda en
+   **430 casos**. Tras habilitar el caso seguro de autoincremento se recompilan
    y ensamblan los **13 shaders**: solo cambia `indexed_vcl.vsm`; los otros 12
    permanecen bit a bit idénticos a la baseline `default`.
 

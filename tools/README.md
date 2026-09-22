@@ -59,10 +59,13 @@ complete set of detected loop candidates:
 ```
 
 The `loop_candidates` array includes Q producer/consumer counts, loop shape,
-memory accesses, pre/post-increment use, and XGKICK presence. In particular,
-loops with `q_producers: 0` remain visible even though they are excluded from
-the Q-specific planner; eligible simple counted loops may still be handled by
-the generic cyclic-prefix rewrite path.
+memory accesses, pre/post-increment use, XGKICK presence, and explicit CFG-shape
+counters: `internal_labels`, `internal_branches`, `exit_branches`, and
+`nested_backedges`. In particular, loops with `q_producers: 0` remain visible
+even though they are excluded from the Q-specific planner; eligible simple
+counted loops may still be handled by the generic cyclic-prefix rewrite path.
+These counters distinguish a multi-exit loop from an outer loop that contains a
+nested backedge instead of collapsing both into `simple_counted_loop: false`.
 
 Characterize those accepted no-Q rewrites against a completed baseline:
 

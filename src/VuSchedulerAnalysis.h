@@ -154,6 +154,10 @@ struct VuLoopCandidate
 	unsigned int loopCsClid;
 	unsigned int loopCsMlid;
 	bool simpleCountedLoop;
+	unsigned int internalLabelCount;
+	unsigned int internalBranchCount;
+	unsigned int exitBranchCount;
+	unsigned int nestedBackedgeCount;
 	unsigned int memoryLoadCount;
 	unsigned int memoryStoreCount;
 	bool hasMemoryPreOrPostIncrement;

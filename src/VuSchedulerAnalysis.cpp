@@ -5896,6 +5896,10 @@ VuLoopCandidate::VuLoopCandidate()
 	loopCsClid = 0;
 	loopCsMlid = 0;
 	simpleCountedLoop = false;
+	internalLabelCount = 0;
+	internalBranchCount = 0;
+	exitBranchCount = 0;
+	nestedBackedgeCount = 0;
 	memoryLoadCount = 0;
 	memoryStoreCount = 0;
 	hasMemoryPreOrPostIncrement = false;
@@ -6374,11 +6378,36 @@ std::vector<VuLoopCandidate> findVuLoopCandidates( const std::list<Token>& token
 		candidate.simpleCountedLoop = candidate.hasLoopDirective
 		                           && !isVuTerminalUnconditionalBranch( token )
 		                           && vuTokenBranchDelaySlots( token ) > 0;
-		candidate.branchToken = &token;
+			candidate.branchToken = &token;
 
-		for( unsigned int body = candidate.firstBodyTokenIndex; body <= candidate.lastBodyTokenIndex; ++body )
-			candidate.bodyTokens.push_back( indexedTokens[body] );
-		analyzeLoopCandidateResources( candidate );
+			for( unsigned int body = candidate.firstBodyTokenIndex; body <= candidate.lastBodyTokenIndex; ++body )
+			{
+				candidate.bodyTokens.push_back( indexedTokens[body] );
+				if( body != candidate.labelTokenIndex
+				    && indexedTokens[body]->label().length() != 0 )
+					++candidate.internalLabelCount;
+
+				if( body == candidate.branchTokenIndex )
+					continue;
+				std::string innerTargetLabel;
+				if( !branchTargetLabel( *indexedTokens[body], innerTargetLabel ) )
+					continue;
+
+				std::map<std::string, unsigned int>::const_iterator innerTarget =
+				    labels.find( innerTargetLabel );
+				if( innerTarget == labels.end()
+				    || innerTarget->second < candidate.firstBodyTokenIndex
+				    || innerTarget->second > candidate.lastBodyTokenIndex )
+				{
+					++candidate.exitBranchCount;
+					continue;
+				}
+
+				++candidate.internalBranchCount;
+				if( innerTarget->second < body )
+					++candidate.nestedBackedgeCount;
+			}
+			analyzeLoopCandidateResources( candidate );
 
 		result.push_back( candidate );
 	}

@@ -761,10 +761,14 @@ namespace
 		       << " q_producers=" << countLoopQProducers( loop )
 		       << " q_consumers=" << countLoopQConsumers( loop )
 		       << " loop_directive=" << (loop.hasLoopDirective ? "yes" : "no")
-		       << " loop_cs_clid=" << loop.loopCsClid
-		       << " loop_cs_mlid=" << loop.loopCsMlid
-		       << " simple_counted_loop=" << (loop.simpleCountedLoop ? "yes" : "no")
-		       << " memory_loads=" << loop.memoryLoadCount
+			       << " loop_cs_clid=" << loop.loopCsClid
+			       << " loop_cs_mlid=" << loop.loopCsMlid
+			       << " simple_counted_loop=" << (loop.simpleCountedLoop ? "yes" : "no")
+			       << " internal_labels=" << loop.internalLabelCount
+			       << " internal_branches=" << loop.internalBranchCount
+			       << " exit_branches=" << loop.exitBranchCount
+			       << " nested_backedges=" << loop.nestedBackedgeCount
+			       << " memory_loads=" << loop.memoryLoadCount
 		       << " memory_stores=" << loop.memoryStoreCount
 		       << " memory_pre_post_increment=" << (loop.hasMemoryPreOrPostIncrement ? "yes" : "no")
 		       << " xgkick=" << (loop.hasXgkick ? "yes" : "no")
@@ -783,10 +787,14 @@ namespace
 		stream << "      \"q_producers\": " << countLoopQProducers( loop ) << ",\n";
 		stream << "      \"q_consumers\": " << countLoopQConsumers( loop ) << ",\n";
 		stream << "      \"loop_directive\": " << (loop.hasLoopDirective ? "true" : "false") << ",\n";
-		stream << "      \"loop_cs_clid\": " << loop.loopCsClid << ",\n";
-		stream << "      \"loop_cs_mlid\": " << loop.loopCsMlid << ",\n";
-		stream << "      \"simple_counted_loop\": " << (loop.simpleCountedLoop ? "true" : "false") << ",\n";
-		stream << "      \"memory_loads\": " << loop.memoryLoadCount << ",\n";
+			stream << "      \"loop_cs_clid\": " << loop.loopCsClid << ",\n";
+			stream << "      \"loop_cs_mlid\": " << loop.loopCsMlid << ",\n";
+			stream << "      \"simple_counted_loop\": " << (loop.simpleCountedLoop ? "true" : "false") << ",\n";
+			stream << "      \"internal_labels\": " << loop.internalLabelCount << ",\n";
+			stream << "      \"internal_branches\": " << loop.internalBranchCount << ",\n";
+			stream << "      \"exit_branches\": " << loop.exitBranchCount << ",\n";
+			stream << "      \"nested_backedges\": " << loop.nestedBackedgeCount << ",\n";
+			stream << "      \"memory_loads\": " << loop.memoryLoadCount << ",\n";
 		stream << "      \"memory_stores\": " << loop.memoryStoreCount << ",\n";
 		stream << "      \"memory_pre_post_increment\": " << (loop.hasMemoryPreOrPostIncrement ? "true" : "false") << ",\n";
 		stream << "      \"xgkick\": " << (loop.hasXgkick ? "true" : "false") << "\n";

@@ -223,7 +223,10 @@ Elegir las primeras optimizaciones por evidencia, no por el nombre del shader.
    (`indexed/dir_light_vert_loop_lid`) ya está cubierto: el `SQI (...++)`
    permanece en el sufijo original, fuera del prefijo clonado, y dispone de
    validación diferencial runtime. No generalizar esto a actualizaciones que
-   formen parte del prefijo sin una prueba equivalente.
+   formen parte del prefijo sin una prueba equivalente. Los no-Q aún no
+   transformados tampoco son simples variantes de este caso: seis tienen
+   múltiples salidas tempranas y diez son bucles exteriores con un backedge
+   anidado. Requieren soporte de CFG explícito antes de cualquier rewrite.
 
 **Entrega:** mejoras por categoría de bucle, cada una con casos positivos,
 negativos y diferenciales; fallback seguro cuando la transformación no es legal.

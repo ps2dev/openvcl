@@ -288,6 +288,10 @@ TEST_CASE("VuSchedulerAnalysis: loop candidates find LoopCS back-edge loops")
     CHECK(loops[0].loopCsClid == 1u);
     CHECK(loops[0].loopCsMlid == 3u);
     CHECK(loops[0].simpleCountedLoop);
+    CHECK(loops[0].internalLabelCount == 0u);
+    CHECK(loops[0].internalBranchCount == 0u);
+    CHECK(loops[0].exitBranchCount == 0u);
+    CHECK(loops[0].nestedBackedgeCount == 0u);
     CHECK(loops[0].memoryLoadCount == 1u);
     CHECK(loops[0].memoryStoreCount == 0u);
     CHECK(!loops[0].hasMemoryPreOrPostIncrement);
@@ -326,6 +330,60 @@ TEST_CASE("VuSchedulerAnalysis: loop candidates ignore forward branches and mark
     CHECK(!loops[0].simpleCountedLoop);
     REQUIRE(loops[0].branchToken != NULL);
     CHECK(vcl::normalizeVuMnemonic(loops[0].branchToken->name()) == "b");
+}
+
+TEST_CASE("VuSchedulerAnalysis: loop candidates classify early exits")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("lq vf01, 0(vi01)"));
+    REQUIRE(program.parse("ibeq vi04, vi05, done_lid"));
+    REQUIRE(program.parse("iaddiu vi01, vi01, 1"));
+    REQUIRE(program.parse("ibne vi01, vi02, loop_lid"));
+    REQUIRE(program.parse("done_lid:"));
+    REQUIRE(program.parse("nop"));
+
+    std::vector<vcl::VuLoopCandidate> loops =
+        vcl::findVuLoopCandidates(program.tokenizer.tokens());
+    REQUIRE(loops.size() == 1u);
+    CHECK(loops[0].label == "loop_lid");
+    CHECK(!loops[0].simpleCountedLoop);
+    CHECK(loops[0].internalLabelCount == 0u);
+    CHECK(loops[0].internalBranchCount == 0u);
+    CHECK(loops[0].exitBranchCount == 1u);
+    CHECK(loops[0].nestedBackedgeCount == 0u);
+}
+
+TEST_CASE("VuSchedulerAnalysis: loop candidates classify nested backedges")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("outer_lid:"));
+    REQUIRE(program.parse("inner_lid:"));
+    REQUIRE(program.parse("add.xyz vf01, vf01, vf02"));
+    REQUIRE(program.parse("iaddiu vi01, vi01, 1"));
+    REQUIRE(program.parse("ibne vi01, vi02, inner_lid"));
+    REQUIRE(program.parse("isubiu vi03, vi03, 1"));
+    REQUIRE(program.parse("ibne vi03, vi00, outer_lid"));
+
+    std::vector<vcl::VuLoopCandidate> loops =
+        vcl::findVuLoopCandidates(program.tokenizer.tokens());
+    REQUIRE(loops.size() == 2u);
+
+    const vcl::VuLoopCandidate* outer = NULL;
+    for (std::vector<vcl::VuLoopCandidate>::const_iterator i = loops.begin();
+         i != loops.end(); ++i)
+    {
+        if (i->label == "outer_lid")
+            outer = &*i;
+    }
+    REQUIRE(outer != NULL);
+    CHECK(!outer->simpleCountedLoop);
+    CHECK(outer->internalLabelCount == 1u);
+    CHECK(outer->internalBranchCount == 1u);
+    CHECK(outer->exitBranchCount == 0u);
+    CHECK(outer->nestedBackedgeCount == 1u);
 }
 
 TEST_CASE("VuSchedulerAnalysis: pipeline opportunities expose loop-carried Q state")
