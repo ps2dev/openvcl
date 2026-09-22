@@ -28,6 +28,21 @@ successful run prints:
 VU1_DIFFERENTIAL_PASS rows=4
 ```
 
+The ELF also emits a machine-readable `VU1_DIFFERENTIAL_PASS`/`FAIL` marker on
+the EE SIO console. This makes the check observable in PCSX2 even when libc
+`stdout` is not forwarded by the emulator.
+
+On macOS, with an existing PCSX2 setup and BIOS, the checked-in runner creates
+an isolated temporary PCSX2 data directory, enables the EE console there, runs
+the ELF headlessly, and exits according to the SIO marker without modifying the
+user's PCSX2 configuration:
+
+```sh
+python3 test/ps2/vu1_differential/run_pcsx2.py
+```
+
+Use `--pcsx2` and `--pcsx2-data` when PCSX2 or its data directory are elsewhere.
+
 With PS2Link reachable, for example:
 
 ```sh

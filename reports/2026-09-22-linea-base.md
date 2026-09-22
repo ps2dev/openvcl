@@ -14,9 +14,9 @@ regeneración incremental comprobada. Inicio de fases 1/2: auditoría del modelo
 y diagnóstico de los bucles. El primer fallo de la fase 1, que permitía omitir
 instrucciones desconocidas del coste, ya está corregido y cubierto por pruebas.
 También existe ya un primer harness diferencial VU1 ejecutable para comparar el
-pipeline genérico con la ruta conservadora. **No se ha modificado el optimizador,
-no hay aún una nueva mejora de rendimiento ni equivalencia funcional con Sony
-demostrada.**
+pipeline genérico con la ruta conservadora y se ha ejecutado correctamente en
+PCSX2. **No se ha modificado el optimizador, no hay aún una nueva mejora de
+rendimiento ni equivalencia funcional con Sony demostrada.**
 
 ## Cambios
 
@@ -55,13 +55,23 @@ demostrada.**
   regeneradas en cada caso. No se tocaron tiempos de archivos del usuario.
 - Compilan `box.elf`, `nehe_lesson04.elf` y `nehe_lesson05.elf` tanto con
   OpenVCL puro como con Sony; existe `libps2stuff.a` en el SDK instalado.
-- PCSX2 v2.9.74 está instalado. El control de escritorio devuelve
-  `Computer Use permissions are not granted`: **no se ha observado el renderizado**
-  ni confirmado que el fallo histórico de `general_quad` esté resuelto.
-- El nuevo harness diferencial compila hasta ELF con el toolchain PS2 y verifica
-  durante el build que el candidato contiene prólogo de software pipeline y el
-  baseline no. En esta sesión `fsclient devlist` y `ps2client execee` no obtienen
-  respuesta de PS2Link, por lo que su comparación runtime sigue pendiente.
+- PCSX2 v2.9.74 ejecuta el harness diferencial de forma headless. El ELF emite
+  `VU1_DIFFERENTIAL_PASS` por SIO y el runner devuelve 0 tras comparar bit a bit
+  la memoria VU1 de ambas rutas y comprobar además los valores esperados. Esto
+  valida esa fixture concreta; no establece equivalencia con Sony ni rendimiento.
+- `test/ps2/vu1_differential/run_pcsx2.py` crea un `datapath` temporal, habilita
+  la consola EE en una copia de `PCSX2.ini`, reutiliza la ruta de BIOS existente
+  y termina PCSX2 al observar el marcador SIO, sin modificar la configuración
+  del usuario.
+- `general_quad` se ha observado también en PCSX2 usando `box.elf`, comparando
+  OpenVCL puro con el VSM Sony. El fallo histórico **sigue presente**: la ruta
+  OpenVCL por defecto produce una iluminación/color claramente más oscura. Como
+  diagnóstico adicional, un build OpenVCL con
+  `--disable-generic-software-pipelining` queda visualmente mucho más cerca de la
+  referencia Sony. Una medición de la región central de las capturas da
+  luminancia media aproximada 0.326 (OpenVCL actual), 0.507 (sin pipeline) y
+  0.524 (Sony). Son capturas de un ejemplo animado y por tanto sirven solo como
+  smoke test/aislamiento del fallo, no como prueba píxel a píxel de equivalencia.
 
 ## Costes obtenidos
 
@@ -194,13 +204,16 @@ resumidos; para reproducirlos en otra máquina ejecutar de nuevo las herramienta
 
 ## Siguiente hito
 
-Completar fase 1 antes de promover cambios de scheduling: ejecutar en PS2/PCSX2
-el harness diferencial VU1 ya construido y extender el oráculo a memoria/paquetes
-GIF de `general_quad`. Mientras ese runtime no esté disponible, el siguiente
-trabajo no invasivo es explicar el ciclo residual de `final_loop_lid` y separar
-la cola de salida del coste steady-state de loops. `bestCyclesInContext` queda
-por ahora estrictamente diagnóstico: no usarlo como gate hasta cerrar el oráculo
-runtime. No usar nombres de shaders para tomar decisiones.
+Completar fase 1 antes de promover cambios de scheduling: el harness diferencial
+ya tiene ejecución runtime automatizada en PCSX2, pero el smoke test de
+`general_quad` confirma que todavía existe una discrepancia semántica en alguna
+rewrite genérica. El siguiente trabajo no invasivo es explicar el ciclo residual
+de `final_loop_lid`, separar la cola de salida del coste steady-state de loops y
+después aislar la clase de rewrite responsable del fallo de `general_quad` con un
+oráculo reproducible de memoria/paquetes, no solo con capturas.
+`bestCyclesInContext` queda por ahora estrictamente diagnóstico: no usarlo como
+gate hasta cerrar ese oráculo runtime. No usar nombres de shaders para tomar
+decisiones.
 
 No alterar latencias de hardware ni habilitar un pase experimental para conseguir
 una tabla favorable. No considerar ensamblado, invariancia de nombres o capturas
