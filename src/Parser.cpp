@@ -37,6 +37,14 @@ namespace vcl
 
 namespace
 {
+	bool analyzeCostInput( VsmCostAnalyzer& analyzer, std::istream& stream, const std::string& name )
+	{
+		if( analyzer.analyze( stream, name ) )
+			return true;
+		Error::Display( Error( analyzer.error() ) );
+		return false;
+	}
+
 	std::string trimManifestText( const std::string& text )
 	{
 		std::string::size_type first = 0;
@@ -1433,12 +1441,12 @@ bool Parser::analyzeVsmCost()
 			return false;
 		}
 
-		if( !analyzer.analyze( input, m_cmdLine.input() ) )
+		if( !analyzeCostInput( analyzer, input, m_cmdLine.input() ) )
 			return false;
 	}
 	else
 	{
-		if( !analyzer.analyze( std::cin, "stdin" ) )
+		if( !analyzeCostInput( analyzer, std::cin, "stdin" ) )
 			return false;
 	}
 
@@ -1486,7 +1494,7 @@ bool Parser::analyzeVsmCostCompare()
 		return false;
 	}
 
-	if( !baselineAnalyzer.analyze( baselineInput, m_cmdLine.costCompareBaseline() ) )
+	if( !analyzeCostInput( baselineAnalyzer, baselineInput, m_cmdLine.costCompareBaseline() ) )
 		return false;
 
 	if( m_cmdLine.input().length() > 0 )
@@ -1498,12 +1506,12 @@ bool Parser::analyzeVsmCostCompare()
 			return false;
 		}
 
-		if( !candidateAnalyzer.analyze( candidateInput, m_cmdLine.input() ) )
+		if( !analyzeCostInput( candidateAnalyzer, candidateInput, m_cmdLine.input() ) )
 			return false;
 	}
 	else
 	{
-		if( !candidateAnalyzer.analyze( std::cin, "stdin" ) )
+		if( !analyzeCostInput( candidateAnalyzer, std::cin, "stdin" ) )
 			return false;
 	}
 
@@ -1620,7 +1628,7 @@ bool Parser::analyzeVsmCostCompareList()
 			Error::Display( Error( "Could not open cost comparison baseline" ) );
 			return false;
 		}
-		if( !baselineAnalyzer.analyze( baselineInput, baselinePath ) )
+		if( !analyzeCostInput( baselineAnalyzer, baselineInput, baselinePath ) )
 			return false;
 
 		std::ifstream candidateInput( candidatePath.c_str() );
@@ -1629,7 +1637,7 @@ bool Parser::analyzeVsmCostCompareList()
 			Error::Display( Error( "Could not open cost comparison candidate" ) );
 			return false;
 		}
-		if( !candidateAnalyzer.analyze( candidateInput, candidatePath ) )
+		if( !analyzeCostInput( candidateAnalyzer, candidateInput, candidatePath ) )
 			return false;
 
 		const std::vector< std::pair<std::string, unsigned int> >& costLoops = m_cmdLine.costLoops();

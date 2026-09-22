@@ -11,8 +11,10 @@ CMake descrito abajo. Las modificaciones quedan sin commit.
 Fase 0 ejecutada: herramientas probadas, 13 referencias y 52 candidatos
 ensamblados, procedencia abierta verificada, comparación de cuatro modos y
 regeneración incremental comprobada. Inicio de fases 1/2: auditoría del modelo
-y diagnóstico de los bucles. **No se ha modificado el optimizador, no hay aún
-una nueva mejora de rendimiento ni equivalencia funcional demostrada.**
+y diagnóstico de los bucles. El primer fallo de la fase 1, que permitía omitir
+instrucciones desconocidas del coste, ya está corregido y cubierto por pruebas.
+**No se ha modificado el optimizador, no hay aún una nueva mejora de rendimiento
+ni equivalencia funcional demostrada.**
 
 ## Cambios
 
@@ -33,7 +35,7 @@ una nueva mejora de rendimiento ni equivalencia funcional demostrada.**
 
 ## Validación ejecutada
 
-- OpenVCL: **419 casos, 0 fallos, 0 casos conocidos pendientes, 4465 aserciones**.
+- OpenVCL: **423 casos, 0 fallos, 0 casos conocidos pendientes, 4489 aserciones**.
 - MASP: **5/5 grupos CTest**. Compilación Release sin ASAN; no se ha ejecutado
   todavía una nueva pasada con sanitizadores. Hay avisos existentes de C antiguo.
 - Dos ejecuciones limpias de la matriz reproducen exactamente los **65 informes
@@ -124,15 +126,15 @@ secciones, no valida todo el protocolo MPG/carga de microprogramas.
    hazards VF/VI/ACC/flags ni equivale a ejecución repetida real del bucle.
    Los dumps de oportunidades se obtienen del análisis de entrada y no deben
    confundirse con una verificación del VSM final ya asignado.
-6. **Fallo confirmado en la detección de instrucciones desconocidas.**
-   `--cost-json` sobre `nop        mystery VI01, VI02` o sobre
-   `mystery.xyz VF01, VF02, VF03        nop` devuelve éxito,
-   `unknown_instructions=0` e `ignored_lines=0`. El parser busca mnemónicos
-   conocidos y omite el desconocido. Con dos desconocidos solo incrementa
-   `ignored_lines`. Antes de tratar las métricas como un gate autónomo,
-   corregir el reconocimiento de slots con pruebas de entradas desconocidas,
-   operandos que coincidan con mnemónicos, espacios y etiquetas. No se ha
-   modificado ese parser en esta fase. El ensamblado independiente sigue siendo
+6. **Detección de instrucciones desconocidas corregida.** El parser de costes
+   consume los slots según el número de operandos descrito por
+   `VuInstructionInfo`, acepta etiquetas inline y expresiones con espacios, y
+   falla con archivo/línea ante mnemónicos desconocidos, operandos incompletos o
+   texto extra. Los repros `nop        mystery VI01, VI02` y
+   `mystery.xyz VF01, VF02, VF03        nop` dejan de producir un coste válido.
+   Los **65 informes de coste guardados** (13 Sony + 52 candidatos) mantienen
+   exactamente las mismas métricas; solo cambia el campo de ruta cuando se
+   ejecutan desde una ruta relativa. El ensamblado independiente sigue siendo
    obligatorio y tampoco sustituye un validador semántico.
 
 ## Artefactos locales y reproducción
@@ -159,11 +161,10 @@ resumidos; para reproducirlos en otra máquina ejecutar de nuevo las herramienta
 
 ## Siguiente hito
 
-Completar fase 1 antes de promover cambios de scheduling: corregir la validación
-de entradas del analizador de costes y construir el harness diferencial VU1
-con estados de entrada idénticos y comparación de memoria/paquetes GIF. Confirmar
-`general_quad` con ambas rutas. Después, priorizar soporte general de bucles
-sin Q y renombrado menos costoso según pruebas, sin usar nombres de shaders.
+Completar fase 1 antes de promover cambios de scheduling: construir el harness
+diferencial VU1 con estados de entrada idénticos y comparación de memoria/paquetes
+GIF. Confirmar `general_quad` con ambas rutas. Después, priorizar soporte general
+de bucles sin Q y renombrado menos costoso según pruebas, sin usar nombres de shaders.
 
 No alterar latencias de hardware ni habilitar un pase experimental para conseguir
 una tabla favorable. No considerar ensamblado, invariancia de nombres o capturas

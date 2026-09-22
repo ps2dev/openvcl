@@ -43,11 +43,13 @@ run is never resumed in place. If output paths contain whitespace, JSON and
 the summary remain available, but the existing CLI's whitespace-separated
 pair-manifest Markdown report is skipped.
 
-The cost model is **not** a hardware timing or semantic validator. Its current
-unknown-instruction reporting is incomplete; assembly is an independent
-syntax check, not a pipeline-correctness proof. See the execution report for
-confirmed limitations. `.vutext` includes assembler alignment padding, so its
-byte size can exceed eight times the source instruction-row count.
+The cost model is **not** a hardware timing or semantic validator. Cost input
+is parsed strictly: unknown instructions, malformed operands, and invalid
+issue-slot layouts make analysis fail instead of being silently undercounted.
+Assembly remains an independent syntax check, not a pipeline-correctness proof.
+See the execution report for confirmed limitations. `.vutext` includes
+assembler alignment padding, so its byte size can exceed eight times the
+source instruction-row count.
 
 Check label independence against a completed baseline:
 

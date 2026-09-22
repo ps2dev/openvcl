@@ -558,3 +558,49 @@ TEST_CASE("VsmCostAnalyzer inline: MFP reads P without starting a new P producer
     CHECK(contains(text.str(), "mfp_lid: cycles=4"));
     CHECK(contains(text.str(), "wait_stall=10 waitq_stall=0 waitp_stall=10 estimated_cycles=14"));
 }
+
+TEST_CASE("VsmCostAnalyzer rejects unknown instructions in either slot")
+{
+    const char* sources[] = {
+        "mystery.xyz VF01, VF02, VF03        nop\n",
+        "nop        mystery VI01, VI02\n",
+        "mystery.xyz VF01, VF02, VF03        unknown VI01\n",
+        "mystery\n",
+        "nop nop nop\n",
+        "add.xyz VF01,VF02\n"
+    };
+    for (unsigned int i = 0; i < sizeof(sources) / sizeof(sources[0]); ++i)
+    {
+        vcl::VsmCostAnalyzer analyzer;
+        CHECK(!analyzeString(sources[i], "invalid.vsm", analyzer));
+    }
+}
+
+TEST_CASE("VsmCostAnalyzer consumes mnemonic-named operands without creating slots")
+{
+    vcl::VsmCostAnalyzer analyzer;
+    REQUIRE(analyzeString("b nop\nnop b add\nnop iaddiu VI01,VI00,waitq\n",
+                          "symbols.vsm", analyzer));
+    std::ostringstream json;
+    REQUIRE(analyzer.writeJson(json));
+    CHECK(jsonMetric(json.str(), "static_cycles") == 3);
+    CHECK(jsonMetric(json.str(), "branch_cycles") == 2);
+    CHECK(jsonMetric(json.str(), "lower_instructions") == 3);
+    CHECK(jsonMetric(json.str(), "waitq_cycles") == 0);
+    CHECK(jsonMetric(json.str(), "unknown_instructions") == 0);
+}
+
+TEST_CASE("VsmCostAnalyzer supports inline local labels and spaced expressions")
+{
+    vcl::VsmCostAnalyzer analyzer;
+    REQUIRE(analyzeString(".vu\n.local: nop loi (1 + 2) ; comment\n"
+                          "next: add.xyz VF01, VF02, VF03\tnop\n"
+                          "nop iaddiu VI01,VI00,(4 << 2) + 1\n",
+                          "expressions.vsm", analyzer));
+    analyzer.setBlockRepeat(".local", 4);
+    std::ostringstream json;
+    REQUIRE(analyzer.writeJson(json));
+    CHECK(jsonMetric(json.str(), "static_cycles") == 3);
+    CHECK(jsonMetric(json.str(), "weighted_static_cycles") == 6);
+    CHECK(jsonMetric(json.str(), "instructions") == 3);
+}

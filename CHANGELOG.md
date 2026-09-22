@@ -8,6 +8,9 @@
   - `--cost-json` for machine-readable reports;
   - `--cost-loop <label>=<count>` for loop-weighted block analysis;
   - `--cost-loop-preset ps2gl` for known ps2gl hot-loop weights.
+- VSM cost analysis now rejects unknown instructions, malformed operands, and
+  invalid issue-slot layouts instead of silently omitting them from the cost;
+  diagnostics include the input name and source line.
 - Cost reports now include static cycles, estimated cycles, FDIV/EFU producer
   issue stalls, explicit `waitq`/`waitp` stalls, slot usage, paired cycles,
   NOP slots, per-label block costs, and weighted hot-block rankings.

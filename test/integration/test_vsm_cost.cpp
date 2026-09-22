@@ -550,3 +550,22 @@ TEST_CASE("VSM cost CLI: stdin MFP does not report a new P producer stall")
     CHECK(contains(r.stdout_data, "mfp_lid: cycles=4 repeat=3 weighted_cycles=12"));
     CHECK(contains(r.stdout_data, "wait_stall=10 waitq_stall=0 waitp_stall=10 estimated_cycles=14"));
 }
+
+TEST_CASE("VSM cost CLI rejects incomplete models instead of reporting cheap code")
+{
+    const std::string invalid = "\t.vu\nnop nop\nnop mystery VI01, VI02\n";
+    std::vector<std::string> args;
+    args.push_back("--cost-json");
+    ::test::RunResult result = ::test::run_openvcl(args, invalid);
+    CHECK(result.exit_code != 0);
+    CHECK(result.stdout_data.empty());
+    CHECK(contains(result.stderr_data, "stdin:3"));
+    CHECK(contains(result.stderr_data, "mystery"));
+
+    args.clear();
+    args.push_back("--cost-compare-json");
+    args.push_back(fixturePath("simple_scheduled.vsm"));
+    result = ::test::run_openvcl(args, invalid);
+    CHECK(result.exit_code != 0);
+    CHECK(result.stdout_data.empty());
+}

@@ -62,6 +62,7 @@ public:
 	VsmCostAnalyzer();
 
 	bool analyze( std::istream& stream, const std::string& inputName );
+	const std::string& error() const { return m_error; }
 	void setBlockRepeat( const std::string& label, unsigned int repeat );
 	Summary summary() const;
 
@@ -168,7 +169,8 @@ private:
 	void reset();
 	void startBlock( const std::string& label );
 	bool analyzeLine( const std::string& line, unsigned int lineNumber );
-	bool parseCycle( const std::string& line, Slot& upper, Slot& lower ) const;
+	bool parseCycle( const std::string& line, Slot& upper, Slot& lower, std::string& error ) const;
+	bool parseSlot( const std::string& line, std::string::size_type& pos, Slot& slot, std::string& error ) const;
 	void recordCycle( const Slot& upper, const Slot& lower );
 	unsigned int blockRepeat( const Block& block ) const;
 	bool blockIsAffineLoop( const Block& block ) const;
@@ -209,14 +211,12 @@ private:
 	static unsigned int instructionThroughput( const std::string& mnemonic );
 	static bool writesQ( const std::string& mnemonic );
 	static bool writesP( const std::string& mnemonic );
-	static bool isKnownMnemonic( const std::string& mnemonic );
-	static bool startsInstructionToken( const std::string& line, std::string::size_type pos );
 	static bool isDirective( const std::string& line );
-	static bool isLabelOnly( const std::string& line );
 	static std::string affineExpression( unsigned int baseCycles, unsigned int loopCycles );
 	static std::string jsonEscape( const std::string& text );
 
 	std::string m_inputName;
+	std::string m_error;
 	std::vector<Block> m_blocks;
 	std::map<std::string, unsigned int> m_blockRepeats;
 	unsigned int m_currentBlock;

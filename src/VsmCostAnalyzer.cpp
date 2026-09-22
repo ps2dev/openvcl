@@ -72,7 +72,7 @@ namespace
 	bool isWordChar( char c )
 	{
 		return std::isalnum( static_cast<unsigned char>( c ) )
-		    || c == '_' || c == '.' || c == '[' || c == ']';
+		    || c == '_' || c == '.' || c == '$';
 	}
 
 	long metricDelta( unsigned int baseline, unsigned int candidate )
@@ -219,6 +219,7 @@ VsmCostAnalyzer::VsmCostAnalyzer()
 
 void VsmCostAnalyzer::reset()
 {
+	m_error.clear();
 	m_inputName.clear();
 	m_blocks.clear();
 	m_blockRepeats.clear();
@@ -349,105 +350,173 @@ void VsmCostAnalyzer::startBlock( const std::string& label )
 	m_currentBlock = static_cast<unsigned int>( m_blocks.size() - 1 );
 }
 
-bool VsmCostAnalyzer::analyzeLine( const std::string& line, unsigned int /*lineNumber*/ )
+bool VsmCostAnalyzer::analyzeLine( const std::string& line, unsigned int lineNumber )
 {
 	std::string stripped = trim( stripComment( line ) );
-	if( stripped.empty() )
-		return true;
-
-	if( isDirective( stripped ) )
-		return true;
-
-	if( isLabelOnly( stripped ) )
+	// Labels may share an instruction row, including GAS local (.L...) labels.
+	for( ;; )
 	{
-		startBlock( stripped.substr( 0, stripped.size() - 1 ) );
-		return true;
+		const std::string::size_type colon = stripped.find( ':' );
+		if( colon == std::string::npos || colon == 0 )
+			break;
+		bool label = true;
+		for( std::string::size_type i = 0; i < colon; ++i )
+			label = label && isWordChar( stripped[i] );
+		if( !label )
+			break;
+		startBlock( stripped.substr( 0, colon ) );
+		stripped = trim( stripped.substr( colon + 1 ) );
 	}
+	if( stripped.empty() || isDirective( stripped ) )
+		return true;
 
 	Slot upper;
 	Slot lowerSlot;
-	if( parseCycle( line, upper, lowerSlot ) )
+	std::string reason;
+	if( !parseCycle( stripped, upper, lowerSlot, reason ) )
 	{
-		recordCycle( upper, lowerSlot );
-		return true;
+		std::ostringstream message;
+		message << m_inputName << ":" << lineNumber << ": " << reason;
+		m_error = message.str();
+		return false;
 	}
-
-	++m_ignoredLines;
+	recordCycle( upper, lowerSlot );
 	return true;
 }
 
-bool VsmCostAnalyzer::parseCycle( const std::string& line, Slot& upper, Slot& lowerSlot ) const
+namespace
 {
-	std::string body = stripComment( line );
-	std::vector<std::string::size_type> positions;
-
-	for( std::string::size_type i = 0; i < body.size(); ++i )
+	bool expressionOperator( char c )
 	{
-		if( !startsInstructionToken( body, i ) )
-			continue;
-
-		std::string word = firstWord( body.substr( i ) );
-		std::string mnemonic = normalizeMnemonic( word );
-		if( isKnownMnemonic( mnemonic ) )
-			positions.push_back( i );
+		return std::string( "+-*/%&|^~!<>=?:" ).find( c ) != std::string::npos;
 	}
 
-	if( positions.empty() )
-		return false;
-
-	if( positions.size() == 1 )
+	// Consume comma-delimited operands, preserving parenthesized addresses and
+	// expressions. Whitespace after a complete final operand starts the next
+	// issue slot, not another search for a known mnemonic inside an operand.
+	bool consumeCostOperand( const std::string& text, std::string::size_type& pos,
+	                         bool commaRequired )
 	{
-		std::string slotText = trim( body.substr( positions[0] ) );
-		Slot slot;
-		slot.present = true;
-		slot.text = slotText;
-		slot.mnemonic = normalizeMnemonic( firstWord( slotText ) );
-		slot.unit = classifyMnemonic( slot.mnemonic );
-		slot.latency = instructionLatency( slot.mnemonic );
-		slot.throughput = instructionThroughput( slot.mnemonic );
-		slot.nop = slot.unit == UNIT_NOP;
-		std::string word = lower( firstWord( slotText ) );
-		slot.eBit = word.find( "[e" ) != std::string::npos;
-		slot.dBit = word.find( "[d" ) != std::string::npos;
-		slot.tBit = word.find( "[t" ) != std::string::npos;
-
-		if( slot.unit == UNIT_UPPER )
-			upper = slot;
-		else
-			lowerSlot = slot;
-
+		while( pos < text.size() && isSpace( text[pos] ) )
+			++pos;
+		const std::string::size_type begin = pos;
+		std::vector<char> nesting;
+		char quote = 0;
+		while( pos < text.size() )
+		{
+			const char c = text[pos];
+			if( quote )
+			{
+				if( c == '\\' && pos + 1 < text.size() )
+					++pos;
+				else if( c == quote )
+					quote = 0;
+			}
+			else if( c == '"' || c == '\'' )
+				quote = c;
+			else if( c == '(' || c == '[' )
+				nesting.push_back( c );
+			else if( c == ')' || c == ']' )
+			{
+				if( nesting.empty() || (c == ')' ? nesting.back() != '(' : nesting.back() != '[') )
+					return false;
+				nesting.pop_back();
+			}
+			else if( nesting.empty() && c == ',' )
+				break;
+			else if( nesting.empty() && isSpace( c ) )
+			{
+				std::string::size_type next = pos;
+				while( next < text.size() && isSpace( text[next] ) )
+					++next;
+				if( !commaRequired && (next == text.size()
+				    || (!expressionOperator( text[next] ) && text[next] != '(' && text[next] != '['
+				        && (pos == begin || !expressionOperator( text[pos - 1] )))) )
+					break;
+				pos = next;
+				continue;
+			}
+			++pos;
+		}
+		if( pos == begin || quote || !nesting.empty() )
+			return false;
+		if( commaRequired )
+		{
+			if( pos == text.size() || text[pos] != ',' )
+				return false;
+			++pos;
+		}
 		return true;
 	}
+}
 
-	upper.present = true;
-	upper.text = trim( body.substr( positions[0], positions[1] - positions[0] ) );
-	upper.mnemonic = normalizeMnemonic( firstWord( upper.text ) );
-	upper.unit = classifyMnemonic( upper.mnemonic );
-	upper.latency = instructionLatency( upper.mnemonic );
-	upper.throughput = instructionThroughput( upper.mnemonic );
-	upper.nop = upper.unit == UNIT_NOP;
-
-	lowerSlot.present = true;
-	lowerSlot.text = trim( body.substr( positions[1] ) );
-	lowerSlot.mnemonic = normalizeMnemonic( firstWord( lowerSlot.text ) );
-	lowerSlot.unit = classifyMnemonic( lowerSlot.mnemonic );
-	lowerSlot.latency = instructionLatency( lowerSlot.mnemonic );
-	lowerSlot.throughput = instructionThroughput( lowerSlot.mnemonic );
-	lowerSlot.nop = lowerSlot.unit == UNIT_NOP;
-
+bool VsmCostAnalyzer::parseSlot( const std::string& line, std::string::size_type& pos,
+                                Slot& slot, std::string& error ) const
+{
+	while( pos < line.size() && isSpace( line[pos] ) )
+		++pos;
+	const std::string::size_type begin = pos;
+	const std::string word = firstWord( line.substr( pos ) );
+	const std::string mnemonic = normalizeMnemonic( word );
+	const VuInstructionInfo* info = findVuInstructionInfo( mnemonic );
+	if( !info )
 	{
-		std::string word = lower( firstWord( upper.text ) );
-		upper.eBit = word.find( "[e" ) != std::string::npos;
-		upper.dBit = word.find( "[d" ) != std::string::npos;
-		upper.tBit = word.find( "[t" ) != std::string::npos;
+		error = "Unknown VSM instruction: " + word;
+		return false;
 	}
+	pos += word.size();
+	for( unsigned int argument = 0; argument < info->arguments; ++argument )
 	{
-		std::string word = lower( firstWord( lowerSlot.text ) );
-		lowerSlot.eBit = word.find( "[e" ) != std::string::npos;
-		lowerSlot.dBit = word.find( "[d" ) != std::string::npos;
-		lowerSlot.tBit = word.find( "[t" ) != std::string::npos;
+		if( !consumeCostOperand( line, pos, argument + 1 < info->arguments ) )
+		{
+			error = "Malformed operands for VSM instruction: " + word;
+			return false;
+		}
 	}
+	slot.present = true;
+	slot.text = trim( line.substr( begin, pos - begin ) );
+	slot.mnemonic = mnemonic;
+	slot.unit = classifyMnemonic( mnemonic );
+	slot.latency = instructionLatency( mnemonic );
+	slot.throughput = instructionThroughput( mnemonic );
+	slot.nop = slot.unit == UNIT_NOP;
+	const std::string flags = lower( word );
+	slot.eBit = flags.find( "[e" ) != std::string::npos;
+	slot.dBit = flags.find( "[d" ) != std::string::npos;
+	slot.tBit = flags.find( "[t" ) != std::string::npos;
+	while( pos < line.size() && isSpace( line[pos] ) )
+		++pos;
+	return true;
+}
 
+bool VsmCostAnalyzer::parseCycle( const std::string& line, Slot& upper,
+                                 Slot& lowerSlot, std::string& error ) const
+{
+	std::string::size_type pos = 0;
+	Slot first;
+	if( !parseSlot( line, pos, first, error ) )
+		return false;
+	if( pos == line.size() )
+	{
+		if( first.unit == UNIT_UPPER )
+			upper = first;
+		else
+			lowerSlot = first;
+		return true;
+	}
+	upper = first;
+	if( !parseSlot( line, pos, lowerSlot, error ) )
+		return false;
+	if( pos != line.size() )
+	{
+		error = "Unexpected text after two VSM issue slots: " + line.substr( pos );
+		return false;
+	}
+	if( (upper.unit != UNIT_UPPER && upper.unit != UNIT_NOP) || lowerSlot.unit == UNIT_UPPER )
+	{
+		error = "VSM instruction in the wrong issue slot";
+		return false;
+	}
 	return true;
 }
 
@@ -1854,33 +1923,11 @@ bool VsmCostAnalyzer::writesP( const std::string& mnemonic )
 	return info && (info->flags & VU_INSTR_WRITES_P);
 }
 
-bool VsmCostAnalyzer::isKnownMnemonic( const std::string& mnemonic )
-{
-	return isKnownVuInstruction( mnemonic );
-}
-
-bool VsmCostAnalyzer::startsInstructionToken( const std::string& line, std::string::size_type pos )
-{
-	if( pos >= line.size() || !isWordChar( line[pos] ) )
-		return false;
-	if( pos > 0 && isWordChar( line[pos - 1] ) )
-		return false;
-	return true;
-}
-
 bool VsmCostAnalyzer::isDirective( const std::string& line )
 {
 	if( line.empty() )
 		return false;
 	return line[0] == '.';
-}
-
-bool VsmCostAnalyzer::isLabelOnly( const std::string& line )
-{
-	if( line.empty() || line[line.size() - 1] != ':' )
-		return false;
-	return line.find( ' ' ) == std::string::npos
-	    && line.find( '\t' ) == std::string::npos;
 }
 
 std::string VsmCostAnalyzer::affineExpression( unsigned int baseCycles, unsigned int loopCycles )
