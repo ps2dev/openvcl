@@ -6631,6 +6631,7 @@ VuLoopCandidate::VuLoopCandidate()
 	loopCsMlid = 0;
 	simpleCountedLoop = false;
 	forwardExitCountedLoop = false;
+	singleNestedCountedLoop = false;
 	lastForwardExitDelayTokenIndex = 0;
 	internalLabelCount = 0;
 	internalBranchCount = 0;
@@ -7090,9 +7091,11 @@ unsigned int vuIgnoredFlagWawResourcesForRemaining( std::list<Token>::const_iter
 
 namespace
 {
-	bool loopBackedgeReadsSingleKnownInduction( const VuLoopCandidate& candidate )
+	bool loopBackedgeReadsSingleKnownInduction( const VuLoopCandidate& candidate,
+	                                           bool rejectAnyMemoryAutoIncrement )
 	{
-		if( !candidate.branchToken || candidate.hasMemoryPreOrPostIncrement )
+		if( !candidate.branchToken
+		    || (rejectAnyMemoryAutoIncrement && candidate.hasMemoryPreOrPostIncrement) )
 			return false;
 
 		VuTokenResourceAccess branchAccess;
@@ -7183,6 +7186,7 @@ std::vector<VuLoopCandidate> findVuLoopCandidates( const std::list<Token>& token
 		candidate.branchToken = &token;
 		bool forwardExitsAreSafe = true;
 		std::string commonForwardExitLabel;
+		bool nestedBackedgesAreCounted = true;
 
 		for( unsigned int body = candidate.firstBodyTokenIndex; body <= candidate.lastBodyTokenIndex; ++body )
 		{
@@ -7228,7 +7232,13 @@ std::vector<VuLoopCandidate> findVuLoopCandidates( const std::list<Token>& token
 
 				++candidate.internalBranchCount;
 				if( innerTarget->second < body )
+				{
 					++candidate.nestedBackedgeCount;
+					if( !loopTargetHasDirective( indexedTokens, innerTarget->second )
+					    || isVuTerminalUnconditionalBranch( *indexedTokens[body] )
+					    || vuTokenBranchDelaySlots( *indexedTokens[body] ) == 0 )
+						nestedBackedgesAreCounted = false;
+				}
 		}
 		analyzeLoopCandidateResources( candidate );
 		candidate.forwardExitCountedLoop =
@@ -7241,7 +7251,18 @@ std::vector<VuLoopCandidate> findVuLoopCandidates( const std::list<Token>& token
 		    && forwardExitsAreSafe
 		    && branchCanInvertToDrain( token )
 		    && vuTokenBranchDelaySlots( token ) > 0
-		    && loopBackedgeReadsSingleKnownInduction( candidate );
+		    && loopBackedgeReadsSingleKnownInduction( candidate, true );
+		candidate.singleNestedCountedLoop =
+		    !candidate.simpleCountedLoop
+		    && !candidate.hasLoopDirective
+		    && candidate.internalLabelCount == 1
+		    && candidate.internalBranchCount == 1
+		    && candidate.exitBranchCount == 0
+		    && candidate.nestedBackedgeCount == 1
+		    && nestedBackedgesAreCounted
+		    && branchCanInvertToDrain( token )
+		    && vuTokenBranchDelaySlots( token ) > 0
+		    && loopBackedgeReadsSingleKnownInduction( candidate, false );
 
 		result.push_back( candidate );
 	}

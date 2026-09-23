@@ -576,7 +576,7 @@ namespace
             "\t--endexit\n";
     }
 
-    std::string genericPipelineWithForwardExitSource()
+	std::string genericPipelineWithForwardExitSource()
     {
         std::string source = fastNoLightsPipelineSource();
         const std::string marker = "xform_loop_lid:\n";
@@ -598,8 +598,38 @@ namespace
             "\tiaddiu vi11, vi11, 1\n"
             "\tibne vi11, vi12, forward_lid\n"
             "forward_done_lid:\n");
-        return source;
-    }
+		return source;
+	}
+
+	std::string singleNestedLoopDelayFillSource()
+	{
+		return
+		    "\t.init_vf_all\n"
+		    "\t.init_vi_all\n"
+		    "\t.name vsmNestedDelay\n"
+		    "\t--enter\n"
+		    "\t--endenter\n"
+		    "\tiaddiu vi01, vi00, 2\n"
+		    "\tiaddiu vi02, vi00, 1\n"
+		    "\tilw.x vi03, 0(vi02)\n"
+		    "\tmove.xyz vf01, vf00\n"
+		    "\tmove.xyz vf02, vf00\n"
+		    "outer_lid:\n"
+		    "\tiaddiu vi04, vi00, 0\n"
+		    "\tiaddiu vi05, vi00, 2\n"
+		    "inner_lid:\n"
+		    "\t--LoopCS 1,1\n"
+		    "\tadd.xyz vf01, vf01, vf02\n"
+		    "\tiaddiu vi04, vi04, 1\n"
+		    "\tibne vi04, vi05, inner_lid\n"
+		    "\tiaddiu vi02, vi02, 1\n"
+		    "\tilw.x vi03, 0(vi02)\n"
+		    "\tisubiu vi01, vi01, 1\n"
+		    "\tibne vi01, vi00, outer_lid\n"
+		    "\t--exit\n"
+		    "\t--endexit\n";
+	}
+
 
     std::string fastLitPipelineSource()
     {
@@ -1554,9 +1584,19 @@ TEST_CASE("Software pipeline: unrelated forward-exit branches keep safe delay-sl
 
     CHECK(contains(vsm, "xform_loop_lid__PROLOG:"));
     CHECK(!contains(vsm, "forward_lid__PROLOG:"));
-    CHECK(nextInstructionLineContains(vsm,
-                                      "ibeq VI15, VI13, forward_done_lid",
-                                      "iand VI14, VI14, VI12"));
+	CHECK(nextInstructionLineContains(vsm,
+	                                  "ibeq VI15, VI13, forward_done_lid",
+	                                  "iand VI14, VI14, VI12"));
+}
+
+TEST_CASE("Software pipeline: single nested counted loops delay an independent next-outer load")
+{
+	std::string vsm = runEmit(singleNestedLoopDelayFillSource());
+	REQUIRE(vsm.length() > 0);
+
+	CHECK(nextInstructionLineContains(vsm,
+	                                  "ibne VI01, VI00, outer_lid",
+	                                  "ilw.x VI03, 0(VI02)"));
 }
 
 TEST_CASE("Software pipeline: known-loop emitters remain cost references for generic path")

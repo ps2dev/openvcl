@@ -367,8 +367,38 @@ estimaciones estáticas; la suite queda en **444/444 tests** y el fixture prueba
 equivalencia semántica del caso
 ejercitado, no rendimiento de hardware.
 
-El siguiente caso de CFG son los 10 `dir_light_loop_lid` exteriores con un
-backedge anidado; requieren modelado explícito de nested-loop. No alterar
-latencias de hardware ni habilitar un pase experimental para conseguir
-una tabla favorable. No considerar ensamblado, invariancia de nombres o capturas
-visuales aisladas como prueba suficiente de equivalencia semántica.
+El segundo caso de CFG no simple son los 10 `dir_light_loop_lid` exteriores.
+Todos contienen exactamente un backedge interno que apunta a un `LoopCS`
+contado, ninguna salida lateral y un backedge exterior con inducción conocida.
+El dump los marca como `single_nested_counted_loop`; esta clasificación es
+estructural y también puede describir otros outer loops equivalentes, pero la
+optimización se limita actualmente a candidatos sin productores Q.
+
+En los 10 loops no-Q la secuencia final ya ejecutaba incondicionalmente un
+`ILW` del estado de la siguiente luz antes de decrementar el contador exterior.
+Cuando ese load plain y el único IALU que cruza no tienen dependencias de datos,
+memoria implícita ni recursos implícitos, el load se retrasa al delay slot del
+backedge exterior. Por arquitectura el delay slot corre en ambos caminos, así que
+no se introduce una lectura especulativa ni se elimina una lectura existente.
+El `SQI++` que aparece dentro del inner loop de `indexed` queda intacto y no
+forma parte de esta prueba.
+
+`build/baselines/nested-loop-delay-002/` completa los 13 renderers y las cuatro
+variantes sin fallos. Frente al milestone forward-exit cambian exactamente los
+10 VSM default que contienen `dir_light_loop_lid`; los `pt_light_loop_lid`
+con productores Q permanecen sin cambio. El agregado default baja de
+**232541** a **232531** ciclos estimados y no-pipeline permanece igual.
+`build/label-invariance-nested-loop-001/` pasa 13/13 y
+`build/runtime/general-quad-nested-loop-001/` produce
+`PS2GL_GENERAL_QUAD_PASS frames=12 variants=default,no-noq,no-pipeline,sce`.
+El diferencial aislado en PCSX2 produce
+`VU1_DIFFERENTIAL_PASS nested-loop outputs=2 pointer=3 load=333`.
+La suite queda en **446/446 tests**. Estas cifras son del modelo estático; no son
+una medición de rendimiento de PS2.
+
+Los 16 loops no-Q anteriormente clasificados como CFG no simple ya disponen de
+un tratamiento conservador para estas oportunidades locales, pero no se ha
+demostrado un cyclic-prefix rentable para los outer loops. No alterar latencias
+de hardware ni habilitar un pase experimental para conseguir una tabla
+favorable. No considerar ensamblado, invariancia de nombres o capturas visuales
+aisladas como prueba suficiente de equivalencia semántica.

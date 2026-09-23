@@ -114,5 +114,32 @@ queda en **232541** ciclos estimados frente a **232571** tras el milestone de
 ACC, y solo cambian los seis renderers que contienen `adcLoop_lid`. Invariancia
 default pasa 13/13 y `general_quad` continúa 12/12 frente a Sony.
 
-Quedan los 10 `dir_light_loop_lid` exteriores con un backedge anidado. Ese es el
-siguiente caso de CFG; no relajar `simpleCountedLoop` globalmente.
+El segundo subgrupo de CFG no simple también queda cubierto sin relajar
+`simpleCountedLoop`: los 10 `dir_light_loop_lid` son bucles exteriores con
+exactamente un backedge interno `LoopCS`. La clasificación
+`single_nested_counted_loop` exige ese CFG explícito y una inducción exterior
+conocida. Para mantener el alcance demostrado, el relleno se aplica solo a los
+outer loops sin productores Q.
+
+En esos 10 casos el load de la siguiente luz ya era incondicional:
+`ILW light_ptr, 0(light_ptr_ptr)` estaba antes del `ISUBIU` del contador
+exterior. Si el load y ese único IALU son independientes, el compilador retrasa
+el load al delay slot del backedge exterior. Sigue ejecutándose tanto al tomar
+como al no tomar la rama; no se añade, elimina ni especula ningún acceso de
+memoria. `indexed` conserva su `SQI++` del loop interior: no se mueve ni se usa
+como prueba de la inducción exterior.
+
+El diferencial `test/ps2/vu1_nested_loop_differential` pasa en PCSX2 con
+`VU1_DIFFERENTIAL_PASS nested-loop outputs=2 pointer=3 load=333`. La baseline
+`build/baselines/nested-loop-delay-002` completa los 13 renderers y las cuatro
+variantes; solo cambian los 10 default con `dir_light_loop_lid`, mientras los
+`pt_light_loop_lid` estructuralmente parecidos pero con Q permanecen intactos.
+El agregado default baja de **232541** a **232531** ciclos estimados; no-pipeline
+no cambia. La invariancia default pasa 13/13, `general_quad` pasa 12/12 frames
+en las cuatro variantes y la suite queda en **446/446 tests**.
+
+Con esto los 16 loops no-Q que antes estaban bloqueados solo por CFG no simple
+ya tienen tratamiento conservador de sus oportunidades locales de branch-delay.
+No se ha demostrado todavía un cyclic-prefix rentable para esos outer loops; el
+siguiente trabajo debe volver a priorizar candidatos por dependencia/coste del
+corpus, no por nombre de shader.

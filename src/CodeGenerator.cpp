@@ -998,6 +998,8 @@ bool CodeGenerator::beginProcess(const std::list<Token>& tokens)
 	{
 		if( std::getenv("OPENVCL_DISABLE_FORWARD_EXIT_BRANCH_DELAY_FILL") == NULL )
 			fillForwardExitLoopBranchDelaySlots(workTokens);
+		if( std::getenv("OPENVCL_DISABLE_NESTED_LOOP_BRANCH_DELAY_FILL") == NULL )
+			fillSingleNestedLoopBranchDelaySlots(workTokens);
 		const std::vector<VuSoftwarePipelineRewritePlan> pipelinePlans =
 			buildVuSoftwarePipelineRewritePlans(workTokens);
 		// Track 9.G-1h step 4b-3b-5: dormant read of shadow-placer refit
@@ -2414,6 +2416,38 @@ void CodeGenerator::fillForwardExitLoopBranchDelaySlots( std::list<Token>& token
 	}
 }
 
+void CodeGenerator::fillSingleNestedLoopBranchDelaySlots( std::list<Token>& tokens ) const
+{
+	const std::vector<VuLoopCandidate> loops = findVuLoopCandidates( tokens );
+	std::set<const Token*> eligibleBranches;
+	for( std::vector<VuLoopCandidate>::const_iterator loop = loops.begin();
+	     loop != loops.end(); ++loop )
+	{
+		if( !loop->singleNestedCountedLoop || !loop->branchToken )
+			continue;
+		bool writesQ = false;
+		for( std::vector<const Token*>::const_iterator token = loop->bodyTokens.begin();
+		     token != loop->bodyTokens.end(); ++token )
+		{
+			if( *token && vuTokenWritesQ( **token ) )
+			{
+				writesQ = true;
+				break;
+			}
+		}
+		if( !writesQ )
+			eligibleBranches.insert( loop->branchToken );
+	}
+
+	for( std::list<Token>::iterator branch = tokens.begin(); branch != tokens.end(); ++branch )
+	{
+		if( eligibleBranches.find( &*branch ) == eligibleBranches.end()
+		    || nextTokenIsBranchDelayFiller( branch, tokens.end() ) )
+			continue;
+		movePlainLoadAcrossIntegerIntoBranchDelaySlot( tokens, branch );
+	}
+}
+
 unsigned int CodeGenerator::ignoredImplicitWawResourcesForRemaining( std::list<Token>::const_iterator begin,
                                                                      std::list<Token>::const_iterator end ) const
 {
@@ -2702,6 +2736,75 @@ bool CodeGenerator::moveDeadFallthroughIntoBranchDelaySlot( std::list<Token>& to
 	std::list<Token>::iterator afterBranch = branch;
 	++afterBranch;
 	tokens.insert(afterBranch, filler);
+	return true;
+}
+
+bool CodeGenerator::movePlainLoadAcrossIntegerIntoBranchDelaySlot(
+	std::list<Token>& tokens,
+	std::list<Token>::iterator branch ) const
+{
+	if( branch == tokens.begin() || vuTokenBranchDelaySlots( *branch ) != 1 )
+		return false;
+	if( nextTokenIsBranchDelayFiller( branch, tokens.end() ) )
+		return false;
+
+	std::list<Token>::iterator crossed = branch;
+	--crossed;
+	if( crossed == tokens.begin() )
+		return false;
+	std::list<Token>::iterator load = crossed;
+	--load;
+
+	if( load->label().length() != 0 || crossed->label().length() != 0 )
+		return false;
+	if( load->flags() & (Token::PREORDERED | Token::E | Token::D | Token::T
+	                    | Token::BRANCH_DELAY_FILLER
+	                    | Token::SCHEDULED_PAIR_FIRST | Token::SCHEDULED_PAIR_SECOND) )
+		return false;
+	if( crossed->flags() & (Token::PREORDERED | Token::E | Token::D | Token::T
+	                       | Token::BRANCH_DELAY_FILLER
+	                       | Token::SCHEDULED_PAIR_FIRST | Token::SCHEDULED_PAIR_SECOND) )
+		return false;
+	if( !isVuPlainMemoryLoad( *load )
+	    || !crossed->operand()
+	    || crossed->operand()->unit() != Operand::IALU
+	    || crossed->operand()->latency() > 1 )
+		return false;
+
+	VuTokenResourceAccess loadAccess;
+	VuTokenResourceAccess crossedAccess;
+	VuTokenResourceAccess branchAccess;
+	if( !buildVuTokenResourceAccess( *load, loadAccess )
+	    || !buildVuTokenResourceAccess( *crossed, crossedAccess )
+	    || !buildVuTokenResourceAccess( *branch, branchAccess ) )
+		return false;
+	if( crossedAccess.memoryKind != VU_MEMORY_NONE
+	    || crossedAccess.branchDelaySlots != 0
+	    || crossedAccess.implicitReads != VU_RESOURCE_NONE
+	    || crossedAccess.implicitWrites != VU_RESOURCE_NONE )
+		return false;
+	if( loadAccess.implicitReads != VU_RESOURCE_NONE
+	    || loadAccess.implicitWrites != VU_RESOURCE_NONE )
+		return false;
+	if( branchAccess.instructionFlags & (VU_INSTR_LINK_BRANCH | VU_INSTR_REGISTER_BRANCH) )
+		return false;
+
+	if( vuTokensHaveDataDependency( *load, *crossed )
+	    || vuTokensHaveDataDependency( *crossed, *load )
+	    || vuTokensHaveDataDependency( *load, *branch )
+	    || vuTokensHaveDataDependency( *branch, *load ) )
+		return false;
+	if( loadAccess.implicitWrites & (branchAccess.implicitReads | branchAccess.implicitWrites) )
+		return false;
+	if( branchAccess.implicitWrites & (loadAccess.implicitReads | loadAccess.implicitWrites) )
+		return false;
+
+	Token filler = *load;
+	filler.setFlags( filler.flags() | Token::BRANCH_DELAY_FILLER );
+	tokens.erase( load );
+	std::list<Token>::iterator afterBranch = branch;
+	++afterBranch;
+	tokens.insert( afterBranch, filler );
 	return true;
 }
 

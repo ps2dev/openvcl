@@ -71,6 +71,11 @@ for branch-delay filling: all non-backedge branches leave the loop for the same
 forward target, the backedge has one known induction update, and the loop has no
 internal labels or nested backedges. This is a CFG classification, not a shader
 name check.
+`single_nested_counted_loop` identifies a separate outer-loop shape: exactly
+one internal label and one internal backedge, that backedge targets a counted
+`LoopCS`, there are no lateral exits, and the outer backedge has one known
+induction update. The current branch-delay optimization additionally requires
+the outer loop to have no Q producers.
 
 For scheduler diagnostics only, `OPENVCL_DUMP_NO_Q_LOOP_MII=1` also prints
 resource/recurrence lower bounds for no-Q cyclic-prefix candidates. The
@@ -199,6 +204,21 @@ forward-exit loops. The baseline keeps the old empty-delay behavior while still
 rewriting the independent Q loop. The expected runtime marker is
 `VU1_DIFFERENTIAL_PASS forward-exit rows=3 pointer=3`.
 
+The nested-loop differential fixture checks the separate case where a plain load
+of next-outer state can cross one independent integer update into the outer
+backedge delay slot:
+
+```sh
+make -C test/ps2/vu1_nested_loop_differential
+python3 test/ps2/vu1_differential/run_pcsx2.py \
+  --elf test/ps2/vu1_nested_loop_differential/vu1_nested_loop_differential.elf
+```
+
+The load already executes unconditionally in the source and still executes on
+both branch outcomes in the delay slot. The proof does not move pre/postincrement
+memory operations and does not rely on the inner loop's induction. The expected
+marker is `VU1_DIFFERENTIAL_PASS nested-loop outputs=2 pointer=3 load=333`.
+
 For scheduler isolation only, the following environment switches disable
 classes of rewrite without changing source shaders: `OPENVCL_DISABLE_MULTI_Q_SOFTWARE_PIPELINE`,
 `OPENVCL_DISABLE_NO_Q_CYCLIC_PREFIX`, `OPENVCL_DISABLE_NO_Q_LOOP_EXTRA_CYCLIC_PREFIX`,
@@ -209,8 +229,10 @@ multi-Q transformation. Normal compilation requires the candidate main,
 scheduled in prolog context, to have a strictly lower estimated cycle count than
 the original loop. `OPENVCL_DISABLE_FORWARD_EXIT_BRANCH_DELAY_FILL=1` is likewise
 diagnostic-only and restores the previous empty-delay behavior for the dedicated
-runtime fixture. These variables are diagnostic controls, not shader-specific
-scheduling heuristics or supported optimization policy.
+runtime fixture. `OPENVCL_DISABLE_NESTED_LOOP_BRANCH_DELAY_FILL=1` similarly
+disables only the nested-loop delay-slot movement for its differential fixture.
+These variables are diagnostic controls, not shader-specific scheduling
+heuristics or supported optimization policy.
 
 Do not rebuild the root OpenVCL binary while these scripts are running: CMake
 writes it into the source root even when using a separate build directory.

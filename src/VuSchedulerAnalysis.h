@@ -155,6 +155,7 @@ struct VuLoopCandidate
 	unsigned int loopCsMlid;
 	bool simpleCountedLoop;
 	bool forwardExitCountedLoop;
+	bool singleNestedCountedLoop;
 	unsigned int lastForwardExitDelayTokenIndex;
 	unsigned int internalLabelCount;
 	unsigned int internalBranchCount;
