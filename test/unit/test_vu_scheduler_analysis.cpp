@@ -394,12 +394,38 @@ TEST_CASE("VuSchedulerAnalysis: loop candidates classify early exits")
 
     std::vector<vcl::VuLoopCandidate> loops =
         vcl::findVuLoopCandidates(program.tokenizer.tokens());
+	REQUIRE(loops.size() == 1u);
+	CHECK(loops[0].label == "loop_lid");
+	CHECK(!loops[0].simpleCountedLoop);
+	CHECK(loops[0].forwardExitCountedLoop);
+	CHECK(loops[0].lastForwardExitDelayTokenIndex == 3u);
+	CHECK(loops[0].internalLabelCount == 0u);
+	CHECK(loops[0].internalBranchCount == 0u);
+	CHECK(loops[0].exitBranchCount == 1u);
+	CHECK(loops[0].nestedBackedgeCount == 0u);
+}
+
+TEST_CASE("VuSchedulerAnalysis: forward-exit counted loops require a common exit")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("lq vf01, 0(vi01)"));
+    REQUIRE(program.parse("ibeq vi04, vi05, done_a_lid"));
+    REQUIRE(program.parse("ibeq vi06, vi07, done_b_lid"));
+    REQUIRE(program.parse("iaddiu vi01, vi01, 1"));
+    REQUIRE(program.parse("ibne vi01, vi02, loop_lid"));
+    REQUIRE(program.parse("done_a_lid:"));
+    REQUIRE(program.parse("nop"));
+    REQUIRE(program.parse("done_b_lid:"));
+    REQUIRE(program.parse("nop"));
+
+    std::vector<vcl::VuLoopCandidate> loops =
+        vcl::findVuLoopCandidates(program.tokenizer.tokens());
     REQUIRE(loops.size() == 1u);
-    CHECK(loops[0].label == "loop_lid");
     CHECK(!loops[0].simpleCountedLoop);
-    CHECK(loops[0].internalLabelCount == 0u);
-    CHECK(loops[0].internalBranchCount == 0u);
-    CHECK(loops[0].exitBranchCount == 1u);
+    CHECK(!loops[0].forwardExitCountedLoop);
+    CHECK(loops[0].exitBranchCount == 2u);
     CHECK(loops[0].nestedBackedgeCount == 0u);
 }
 
@@ -425,10 +451,12 @@ TEST_CASE("VuSchedulerAnalysis: loop candidates classify nested backedges")
     {
         if (i->label == "outer_lid")
             outer = &*i;
-    }
-    REQUIRE(outer != NULL);
-    CHECK(!outer->simpleCountedLoop);
-    CHECK(outer->internalLabelCount == 1u);
+	}
+	REQUIRE(outer != NULL);
+	CHECK(!outer->simpleCountedLoop);
+	CHECK(!outer->forwardExitCountedLoop);
+	CHECK(outer->lastForwardExitDelayTokenIndex == 0u);
+	CHECK(outer->internalLabelCount == 1u);
     CHECK(outer->internalBranchCount == 1u);
     CHECK(outer->exitBranchCount == 0u);
     CHECK(outer->nestedBackedgeCount == 1u);

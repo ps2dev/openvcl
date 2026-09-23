@@ -576,6 +576,31 @@ namespace
             "\t--endexit\n";
     }
 
+    std::string genericPipelineWithForwardExitSource()
+    {
+        std::string source = fastNoLightsPipelineSource();
+        const std::string marker = "xform_loop_lid:\n";
+        const std::string::size_type pos = source.find(marker);
+        if (pos == std::string::npos)
+            return std::string();
+
+        source.insert(pos,
+            "\tiaddiu vi11, vi00, 0\n"
+            "\tiaddiu vi12, vi00, 4\n"
+            "\tiaddiu vi13, vi00, 1\n"
+            "forward_lid:\n"
+            "\tlq.xyzw vf20, 0(vi11)\n"
+            "\tftoi0.xyzw vf20, vf20\n"
+            "\tmtir vi14, vf20x\n"
+            "\tiand vi15, vi14, vi13\n"
+            "\tibeq vi15, vi13, forward_done_lid\n"
+            "\tiand vi14, vi14, vi12\n"
+            "\tiaddiu vi11, vi11, 1\n"
+            "\tibne vi11, vi12, forward_lid\n"
+            "forward_done_lid:\n");
+        return source;
+    }
+
     std::string fastLitPipelineSource()
     {
         return
@@ -1520,6 +1545,18 @@ TEST_CASE("Software pipeline: generic compiler path is the default")
     expectGenericPathCompiles(ps2glNamedXformLoopSource("vsmGeneralTri"), "xform_loop_lid");
     expectGenericPathCompiles(ps2glNamedXformLoopSource("vsmGeneralPVDiffTri"), "xform_loop_lid");
     expectGenericPathCompiles(ps2glNamedXformLoopSource("vsmIndexed"), "xform_loop_lid");
+}
+
+TEST_CASE("Software pipeline: unrelated forward-exit branches keep safe delay-slot filling")
+{
+    std::string vsm = runEmit(genericPipelineWithForwardExitSource());
+    REQUIRE(vsm.length() > 0);
+
+    CHECK(contains(vsm, "xform_loop_lid__PROLOG:"));
+    CHECK(!contains(vsm, "forward_lid__PROLOG:"));
+    CHECK(nextInstructionLineContains(vsm,
+                                      "ibeq VI15, VI13, forward_done_lid",
+                                      "iand VI14, VI14, VI12"));
 }
 
 TEST_CASE("Software pipeline: known-loop emitters remain cost references for generic path")

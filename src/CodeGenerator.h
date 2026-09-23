@@ -86,6 +86,7 @@ private:
 	unsigned int ignoredImplicitWawResourcesForRemaining( std::list<Token>::const_iterator begin,
 	                                                       std::list<Token>::const_iterator end ) const;
 	void fillPreIncrementStoreBranchDelaySlots( std::list<Token>& tokens ) const;
+	void fillForwardExitLoopBranchDelaySlots( std::list<Token>& tokens ) const;
 	void fillBranchDelaySlots( std::list<Token>& tokens ) const;
 	void fillDeadFallthroughBranchDelaySlots( std::list<Token>& tokens ) const;
 	bool movePreIncrementStoreIntoBranchDelaySlot( std::list<Token>& tokens,

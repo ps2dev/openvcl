@@ -154,6 +154,8 @@ struct VuLoopCandidate
 	unsigned int loopCsClid;
 	unsigned int loopCsMlid;
 	bool simpleCountedLoop;
+	bool forwardExitCountedLoop;
+	unsigned int lastForwardExitDelayTokenIndex;
 	unsigned int internalLabelCount;
 	unsigned int internalBranchCount;
 	unsigned int exitBranchCount;
@@ -314,6 +316,7 @@ struct VuLoopPipelineOpportunity
 	std::vector<VuSoftwarePipelineRotation> multiQCyclicPrefixRotations;
 	unsigned int multiQCyclicPrefixInsertBeforeTokenIndex;
 	bool multiQCyclicPrefixNeedsGuard;
+	bool multiQCyclicPrefixGuardNeedsNopDelay;
 	bool multiQCyclicPrefixLastTokenInBranchDelaySlot;
 	bool multiQCyclicPrefixDefersPostIncrement;
 	unsigned int multiQCyclicPrefixPostIncrementTokenIndex;
@@ -446,6 +449,7 @@ struct VuSoftwarePipelineRewritePlan
 	bool cyclicPrefixBeforeBranch;
 	unsigned int cyclicPrefixInsertBeforeTokenIndex;
 	bool cyclicPrefixNeedsGuard;
+	bool cyclicPrefixGuardNeedsNopDelay;
 	bool cyclicPrefixLastTokenInBranchDelaySlot;
 	bool cyclicPrefixDefersPostIncrement;
 	unsigned int cyclicPrefixPostIncrementTokenIndex;

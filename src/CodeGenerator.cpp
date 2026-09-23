@@ -996,6 +996,8 @@ bool CodeGenerator::beginProcess(const std::list<Token>& tokens)
 	bool appliedGenericSoftwarePipeline = false;
 	if( !m_knownLoopOptimizations && m_genericSoftwarePipelining )
 	{
+		if( std::getenv("OPENVCL_DISABLE_FORWARD_EXIT_BRANCH_DELAY_FILL") == NULL )
+			fillForwardExitLoopBranchDelaySlots(workTokens);
 		const std::vector<VuSoftwarePipelineRewritePlan> pipelinePlans =
 			buildVuSoftwarePipelineRewritePlans(workTokens);
 		// Track 9.G-1h step 4b-3b-5: dormant read of shadow-placer refit
@@ -2363,6 +2365,53 @@ void CodeGenerator::padForReadHazards( const Token& token, const Token* partner 
 void CodeGenerator::recordRegisterWrites( const Token& token, int issueCycle )
 {
 	m_latencyTracker.recordWrites( token, issueCycle, emitsAsUpperMove( token ) );
+}
+
+void CodeGenerator::fillForwardExitLoopBranchDelaySlots( std::list<Token>& tokens ) const
+{
+	const std::vector<VuLoopCandidate> loops = findVuLoopCandidates( tokens );
+	std::set<const Token*> eligibleBranches;
+	for( std::vector<VuLoopCandidate>::const_iterator loop = loops.begin();
+	     loop != loops.end(); ++loop )
+	{
+		if( !loop->forwardExitCountedLoop )
+			continue;
+		for( std::vector<const Token*>::const_iterator token = loop->bodyTokens.begin();
+		     token != loop->bodyTokens.end(); ++token )
+		{
+			if( vuTokenBranchDelaySlots( **token ) == 1 )
+				eligibleBranches.insert( *token );
+		}
+	}
+
+	for( std::list<Token>::iterator branch = tokens.begin(); branch != tokens.end(); ++branch )
+	{
+		if( eligibleBranches.find( &*branch ) == eligibleBranches.end()
+		    || nextTokenIsBranchDelayFiller( branch, tokens.end() ) )
+			continue;
+
+		if( movePreIncrementStoreIntoBranchDelaySlot( tokens, branch )
+		    || moveIndependentStoreIntoBranchDelaySlot( tokens, branch ) )
+			continue;
+
+		if( branch != tokens.begin() )
+		{
+			std::list<Token>::iterator candidate = branch;
+			--candidate;
+			if( canMoveIntoBranchDelaySlot( *candidate, *branch ) )
+			{
+				Token filler = *candidate;
+				filler.setFlags( filler.flags() | Token::BRANCH_DELAY_FILLER );
+				tokens.erase( candidate );
+				std::list<Token>::iterator afterBranch = branch;
+				++afterBranch;
+				tokens.insert( afterBranch, filler );
+				continue;
+			}
+		}
+
+		moveDeadFallthroughIntoBranchDelaySlot( tokens, branch );
+	}
 }
 
 unsigned int CodeGenerator::ignoredImplicitWawResourcesForRemaining( std::list<Token>::const_iterator begin,

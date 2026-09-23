@@ -764,6 +764,8 @@ namespace
 			       << " loop_cs_clid=" << loop.loopCsClid
 			       << " loop_cs_mlid=" << loop.loopCsMlid
 			       << " simple_counted_loop=" << (loop.simpleCountedLoop ? "yes" : "no")
+			       << " forward_exit_counted_loop=" << (loop.forwardExitCountedLoop ? "yes" : "no")
+			       << " last_forward_exit_delay_token=" << loop.lastForwardExitDelayTokenIndex
 			       << " internal_labels=" << loop.internalLabelCount
 			       << " internal_branches=" << loop.internalBranchCount
 			       << " exit_branches=" << loop.exitBranchCount
@@ -787,10 +789,12 @@ namespace
 		stream << "      \"q_producers\": " << countLoopQProducers( loop ) << ",\n";
 		stream << "      \"q_consumers\": " << countLoopQConsumers( loop ) << ",\n";
 		stream << "      \"loop_directive\": " << (loop.hasLoopDirective ? "true" : "false") << ",\n";
-			stream << "      \"loop_cs_clid\": " << loop.loopCsClid << ",\n";
-			stream << "      \"loop_cs_mlid\": " << loop.loopCsMlid << ",\n";
-			stream << "      \"simple_counted_loop\": " << (loop.simpleCountedLoop ? "true" : "false") << ",\n";
-			stream << "      \"internal_labels\": " << loop.internalLabelCount << ",\n";
+		stream << "      \"loop_cs_clid\": " << loop.loopCsClid << ",\n";
+		stream << "      \"loop_cs_mlid\": " << loop.loopCsMlid << ",\n";
+		stream << "      \"simple_counted_loop\": " << (loop.simpleCountedLoop ? "true" : "false") << ",\n";
+		stream << "      \"forward_exit_counted_loop\": " << (loop.forwardExitCountedLoop ? "true" : "false") << ",\n";
+		stream << "      \"last_forward_exit_delay_token_index\": " << loop.lastForwardExitDelayTokenIndex << ",\n";
+		stream << "      \"internal_labels\": " << loop.internalLabelCount << ",\n";
 			stream << "      \"internal_branches\": " << loop.internalBranchCount << ",\n";
 			stream << "      \"exit_branches\": " << loop.exitBranchCount << ",\n";
 			stream << "      \"nested_backedges\": " << loop.nestedBackedgeCount << ",\n";
@@ -1034,6 +1038,8 @@ namespace
 			       << opportunity.multiQCyclicPrefixInsertBeforeTokenIndex << ",\n";
 			stream << "        \"cyclic_prefix_guarded\": "
 			       << (opportunity.multiQCyclicPrefixNeedsGuard ? "true" : "false") << ",\n";
+			stream << "        \"cyclic_prefix_guard_nop_delay\": "
+			       << (opportunity.multiQCyclicPrefixGuardNeedsNopDelay ? "true" : "false") << ",\n";
 			stream << "        \"cyclic_prefix_last_token_in_branch_delay_slot\": "
 			       << (opportunity.multiQCyclicPrefixLastTokenInBranchDelaySlot ? "true" : "false") << ",\n";
 			stream << "        \"cyclic_prefix_defers_postincrement\": "
@@ -1066,6 +1072,8 @@ namespace
 			       << (rewritePlan && rewritePlan->cyclicPrefixBeforeBranch ? "true" : "false") << ",\n";
 			stream << "        \"cyclic_prefix_guarded\": "
 			       << (rewritePlan && rewritePlan->cyclicPrefixNeedsGuard ? "true" : "false") << ",\n";
+			stream << "        \"cyclic_prefix_guard_nop_delay\": "
+			       << (rewritePlan && rewritePlan->cyclicPrefixGuardNeedsNopDelay ? "true" : "false") << ",\n";
 			stream << "        \"cyclic_prefix_last_token_in_branch_delay_slot\": "
 			       << (rewritePlan && rewritePlan->cyclicPrefixLastTokenInBranchDelaySlot ? "true" : "false") << ",\n";
 			stream << "        \"cyclic_prefix_defers_postincrement\": "

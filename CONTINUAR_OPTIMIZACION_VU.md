@@ -96,6 +96,23 @@ default; `indexed` vuelve a **30558**, igual que no-pipeline, y los tres
 `general_nospec*` evitan también un rewrite cuyo main estimado era 77 frente a
 75. Los 13 renderers compilan/ensamblan, invariancia default pasa 13/13,
 `general_quad` sigue 12/12 contra Sony y el fixture postincrement sigue pasando
-1/2/4 iteraciones en PCSX2. El siguiente trabajo puede retomar los 16 loops no-Q
-con CFG no simple mediante soporte explícito multi-exit/nested-loop; no relajar
-`simpleCountedLoop` globalmente.
+1/2/4 iteraciones en PCSX2.
+
+El primer subgrupo de los 16 loops no-Q con CFG no simple ya está caracterizado:
+los 6 `adcLoop_lid` son loops contados con cuatro salidas tempranas hacia un
+único destino común. Una extensión cyclic-prefix segura necesitaría un guard
+terminal; en el estado final del milestone el mejor candidato queda en 39 ciclos
+frente a 35 del
+loop original, por lo que el gate lo rechaza. Sí había una pérdida independiente:
+al reescribir cualquier otro loop del shader se desactivaba globalmente el
+relleno de branch-delay slots. Ahora los loops estructuralmente clasificados como
+`forward_exit_counted_loop` rellenan sus slots seguros antes de aplicar los
+rewrites del resto del programa. El fixture
+`test/ps2/vu1_forward_exit_differential` pasa en PCSX2 con
+`VU1_DIFFERENTIAL_PASS forward-exit rows=3 pointer=3`; la baseline completa
+queda en **232541** ciclos estimados frente a **232571** tras el milestone de
+ACC, y solo cambian los seis renderers que contienen `adcLoop_lid`. Invariancia
+default pasa 13/13 y `general_quad` continúa 12/12 frente a Sony.
+
+Quedan los 10 `dir_light_loop_lid` exteriores con un backedge anidado. Ese es el
+siguiente caso de CFG; no relajar `simpleCountedLoop` globalmente.

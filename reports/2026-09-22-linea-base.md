@@ -340,6 +340,35 @@ rutas diffuse/specular por sus consumidores en vez de por el orden textual.
 La suite queda en **442 casos** y `general_quad` continúa validando 12/12
 frames frente a Sony.
 
-No alterar latencias de hardware ni habilitar un pase experimental para conseguir
+El primer caso de CFG no simple se ha separado explícitamente. Los seis
+`adcLoop_lid` del corpus tienen cuatro salidas tempranas al mismo destino,
+ninguna label/branch interna y un único backedge contado. El dump los marca como
+`forward_exit_counted_loop`; los loops exteriores `dir_light_loop_lid` con
+backedge anidado permanecen fuera de esa clasificación.
+
+Una copia cyclic-prefix segura del siguiente ciclo en `adcLoop_lid` necesita
+guardarse antes del backedge para no ejecutar un load especulativo al salir. El
+mejor candidato guardado observado cuesta 39 ciclos frente a 35 del loop
+original, así que el gate de rentabilidad lo rechaza. La mejora útil estaba en
+otro sitio: cuando cualquier loop del shader se reescribía, CodeGenerator
+saltaba globalmente el relleno normal de branch-delay slots. El nuevo pase
+acotado rellena únicamente branches pertenecientes a un
+`forward_exit_counted_loop` probado, antes de reescribir otros loops.
+
+`build/baselines/forward-exit-branch-fill-001/` completa los 13 renderers y las
+cuatro variantes sin fallos. Solo cambian los seis VSM default que contienen
+`adcLoop_lid`; el agregado baja de **232571** a **232541** ciclos estimados.
+`build/label-invariance-forward-exit-001/` pasa 13/13 y
+`build/runtime/general-quad-forward-exit-001/` mantiene 12/12 frames frente a
+Sony. El diferencial específico en PCSX2 compara la ruta nueva con el antiguo
+slot vacío mientras ambas mantienen otro loop software-pipelined y produce
+`VU1_DIFFERENTIAL_PASS forward-exit rows=3 pointer=3`. Estas cifras siguen siendo
+estimaciones estáticas; la suite queda en **444/444 tests** y el fixture prueba
+equivalencia semántica del caso
+ejercitado, no rendimiento de hardware.
+
+El siguiente caso de CFG son los 10 `dir_light_loop_lid` exteriores con un
+backedge anidado; requieren modelado explícito de nested-loop. No alterar
+latencias de hardware ni habilitar un pase experimental para conseguir
 una tabla favorable. No considerar ensamblado, invariancia de nombres o capturas
 visuales aisladas como prueba suficiente de equivalencia semántica.

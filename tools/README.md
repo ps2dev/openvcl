@@ -66,6 +66,11 @@ even though they are excluded from the Q-specific planner; eligible simple
 counted loops may still be handled by the generic cyclic-prefix rewrite path.
 These counters distinguish a multi-exit loop from an outer loop that contains a
 nested backedge instead of collapsing both into `simple_counted_loop: false`.
+`forward_exit_counted_loop` additionally identifies the conservative shape used
+for branch-delay filling: all non-backedge branches leave the loop for the same
+forward target, the backedge has one known induction update, and the loop has no
+internal labels or nested backedges. This is a CFG classification, not a shader
+name check.
 
 For scheduler diagnostics only, `OPENVCL_DUMP_NO_Q_LOOP_MII=1` also prints
 resource/recurrence lower bounds for no-Q cyclic-prefix candidates. The
@@ -180,6 +185,20 @@ exactly one incrementing access, a one-slot invertible branch that reads the sam
 base, no other writes to that register, and no later reads before the branch.
 Predecrement, multiple incrementing accesses, and later base reads remain blocked.
 
+The forward-exit differential fixture checks branch-delay filling when an
+unrelated loop in the same microprogram is already software-pipelined:
+
+```sh
+make -C test/ps2/vu1_forward_exit_differential
+python3 test/ps2/vu1_differential/run_pcsx2.py \
+  --elf test/ps2/vu1_forward_exit_differential/vu1_forward_exit_differential.elf
+```
+
+The candidate fills proven-safe delay slots only inside structurally classified
+forward-exit loops. The baseline keeps the old empty-delay behavior while still
+rewriting the independent Q loop. The expected runtime marker is
+`VU1_DIFFERENTIAL_PASS forward-exit rows=3 pointer=3`.
+
 For scheduler isolation only, the following environment switches disable
 classes of rewrite without changing source shaders: `OPENVCL_DISABLE_MULTI_Q_SOFTWARE_PIPELINE`,
 `OPENVCL_DISABLE_NO_Q_CYCLIC_PREFIX`, `OPENVCL_DISABLE_NO_Q_LOOP_EXTRA_CYCLIC_PREFIX`,
@@ -188,7 +207,9 @@ and `OPENVCL_DISABLE_NO_Q_PLAIN_CYCLIC_PREFIX`.
 hatch used by semantic fixtures when they must force an otherwise unprofitable
 multi-Q transformation. Normal compilation requires the candidate main,
 scheduled in prolog context, to have a strictly lower estimated cycle count than
-the original loop. These variables are diagnostic controls, not shader-specific
+the original loop. `OPENVCL_DISABLE_FORWARD_EXIT_BRANCH_DELAY_FILL=1` is likewise
+diagnostic-only and restores the previous empty-delay behavior for the dedicated
+runtime fixture. These variables are diagnostic controls, not shader-specific
 scheduling heuristics or supported optimization policy.
 
 Do not rebuild the root OpenVCL binary while these scripts are running: CMake
