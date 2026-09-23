@@ -95,6 +95,11 @@ semantically realizable by the production rewrite. Combine the probe with
 `OPENVCL_DUMP_LOOP_BUMP_REASONS=1` to distinguish dependency-edge failures from
 MRT resource failures.
 
+The probe also derives ASAP/ALAP/height ordering from those same precise
+intra-iteration edges. Mixing precise placement constraints with the older
+coarse priority graph can itself create artificial placement failures; keeping
+both views consistent is required before interpreting an II gap.
+
 Characterize those accepted no-Q rewrites against a completed baseline:
 
 ```sh

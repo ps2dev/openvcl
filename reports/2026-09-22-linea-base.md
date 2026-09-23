@@ -415,3 +415,12 @@ forzada tampoco debe promoverse: el VSM emitido estima 95 ciclos por iteración
 frente a 94 sin rewrite. Los probes de los 13 renderers generan VSM bit a bit
 idéntico al baseline `nested-loop-delay-002`. Estas cifras son límites y
 estimaciones estáticas, no tiempos medidos en PS2.
+
+Ese primer resultado de `II=83` contenía además una incoherencia del probe: las
+aristas del placer eran precisas, pero la prioridad `ASAP/ALAP/height` seguía
+derivándose del DDG antiguo por base de registro. Al calcular prioridad y
+factibilidad desde el mismo DDG preciso, `indexed/xform_loop_lid` baja a
+**II=53**, a un solo ciclo del límite 52; el único fallo a II=52 sigue siendo
+edge-bound (`IOR`), no MRT-bound. `general/pt_light_vert_loop_lid` alcanza
+exactamente su `preciseRenamedMII=114`. Esta corrección sigue siendo solo
+diagnóstica y los 13 VSM default permanecen bit a bit idénticos al baseline.

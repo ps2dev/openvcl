@@ -154,3 +154,10 @@ a 94 sin rewrite. Los probes de los 13 renderers no cambian ningún VSM del
 baseline `nested-loop-delay-002`. El siguiente trabajo debe investigar esa
 brecha del placer con reglas generales y validación diferencial antes de relajar
 dependencias o autoincrementos.
+
+Corrección posterior del propio probe: su prioridad `ASAP/ALAP/height` usaba el
+DDG grueso aunque la factibilidad ya usaba aristas precisas. Al derivar ambas del
+mismo DDG, `indexed/xform_loop_lid` consigue **II=53** (límite preciso 52) y
+`general/pt_light_vert_loop_lid` consigue exactamente II=114. Los 13 VSM siguen
+idénticos al baseline. No convertir esta mejora diagnóstica en codegen sin una
+prueba diferencial de la ruta de kernel/renombrado que se pretenda promover.

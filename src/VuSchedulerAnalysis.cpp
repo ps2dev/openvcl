@@ -2300,6 +2300,95 @@ namespace
 		}
 	}
 
+	void computeLoopPriorityFromEdges( unsigned int nodeCount,
+	                                   unsigned int II,
+	                                   const std::vector<unsigned int>& edgeFrom,
+	                                   const std::vector<unsigned int>& edgeTo,
+	                                   const std::vector<unsigned int>& edgeDistance,
+	                                   const std::vector<unsigned int>& edgeLatency,
+	                                   LoopPriorityResult& out )
+	{
+		out.asap.assign( nodeCount, 0 );
+		out.alap.assign( nodeCount, 0 );
+		out.height.assign( nodeCount, 0 );
+		out.mobility.assign( nodeCount, 0 );
+		out.order.clear();
+		out.scheduleLength = 0;
+		if( nodeCount == 0 )
+			return;
+
+		// Priority is intra-iteration only. Modulo feasibility below consumes
+		// carried edges separately using their iteration distance.
+		for( unsigned int node = 0; node < nodeCount; ++node )
+		{
+			for( unsigned int edge = 0; edge < edgeFrom.size(); ++edge )
+			{
+				if( edgeDistance[edge] != 0 || edgeTo[edge] != node )
+					continue;
+				const unsigned int candidate =
+				    out.asap[edgeFrom[edge]] + edgeLatency[edge];
+				if( candidate > out.asap[node] )
+					out.asap[node] = candidate;
+			}
+		}
+
+		for( unsigned int node = nodeCount; node-- > 0; )
+		{
+			unsigned int height = 0;
+			for( unsigned int edge = 0; edge < edgeFrom.size(); ++edge )
+			{
+				if( edgeDistance[edge] != 0 || edgeFrom[edge] != node )
+					continue;
+				const unsigned int candidate =
+				    edgeLatency[edge] + out.height[edgeTo[edge]];
+				if( candidate > height )
+					height = candidate;
+			}
+			out.height[node] = height;
+		}
+
+		unsigned int length = 0;
+		for( unsigned int node = 0; node < nodeCount; ++node )
+		{
+			const unsigned int reach = out.asap[node] + out.height[node];
+			if( reach > length )
+				length = reach;
+		}
+		if( II > 0 && length + 1 < II )
+			length = II - 1;
+		out.scheduleLength = length;
+
+		for( unsigned int node = 0; node < nodeCount; ++node )
+		{
+			out.alap[node] = out.height[node] > length ? 0u : length - out.height[node];
+			out.mobility[node] = out.alap[node] > out.asap[node]
+			                   ? out.alap[node] - out.asap[node] : 0u;
+		}
+
+		out.order.resize( nodeCount );
+		for( unsigned int node = 0; node < nodeCount; ++node )
+			out.order[node] = node;
+		for( unsigned int rank = 0; rank < nodeCount; ++rank )
+		{
+			unsigned int best = rank;
+			for( unsigned int candidate = rank + 1; candidate < nodeCount; ++candidate )
+			{
+				const unsigned int candidateNode = out.order[candidate];
+				const unsigned int bestNode = out.order[best];
+				const bool higher = out.height[candidateNode] > out.height[bestNode];
+				const bool equalHeight = out.height[candidateNode] == out.height[bestNode];
+				const bool lowerMobility = out.mobility[candidateNode] < out.mobility[bestNode];
+				const bool equalMobility = out.mobility[candidateNode] == out.mobility[bestNode];
+				if( higher
+				    || ( equalHeight && lowerMobility )
+				    || ( equalHeight && equalMobility && candidateNode < bestNode ) )
+					best = candidate;
+			}
+			if( best != rank )
+				std::swap( out.order[rank], out.order[best] );
+		}
+	}
+
 	std::string registerFieldKey( const std::string& key )
 	{
 		std::string::size_type field = key.find( '.' );
@@ -7660,7 +7749,6 @@ namespace
 			const unsigned int resmii = computeLoopResMII( mt, indexedTokens );
 			const unsigned int mii    = ( recmii > resmii ) ? recmii : resmii;
 			LoopPriorityResult pr;
-			computeLoopPriority( mt, indexedTokens, mii, pr );
 			const unsigned int n = static_cast<unsigned int>( mt.size() );
 			std::vector<unsigned int> slotOf( n, static_cast<unsigned int>( -1 ) );
 			std::vector<unsigned int> stageOf( n, 0 );
@@ -7775,6 +7863,10 @@ namespace
 					}
 				}
 			}
+			if( usePreciseRenamedRecMII )
+				computeLoopPriorityFromEdges( n, mii, dFrom, dTo, dDist, dLat, pr );
+			else
+				computeLoopPriority( mt, indexedTokens, mii, pr );
 			const unsigned int totalEdges = static_cast<unsigned int>( dFrom.size() );
 			unsigned int edgeViolations = 0;
 			// Track 9.G step 1d-1: per-node placement failure reason
