@@ -7455,11 +7455,182 @@ namespace
 	// expanded-DDG nodes. Body is byte-identical: only outer-scope
 	// dependencies are passed in as parameters (opportunity, indexedTokens,
 	// tokens).
+	static void buildPreciseLoopPlacementEdges(
+	    const std::vector<unsigned int>& mt,
+	    const std::vector<const Token*>& indexedTokens,
+	    bool dropRenamableVfCarried,
+	    std::vector<unsigned int>& edgeFrom,
+	    std::vector<unsigned int>& edgeTo,
+	    std::vector<unsigned int>& edgeDistance,
+	    std::vector<unsigned int>& edgeLatency )
+	{
+		const unsigned int n = static_cast<unsigned int>( mt.size() );
+		std::vector< std::vector<std::string> > nodeWrites( n ), nodeReads( n );
+		for( unsigned int k = 0; k < n; ++k )
+		{
+			if( mt[k] >= indexedTokens.size() )
+				continue;
+			VuTokenResourceAccess access;
+			if( !buildVuTokenResourceAccess( *indexedTokens[mt[k]], access ) )
+				continue;
+			for( std::list<std::string>::const_iterator i = access.registerWrites.begin();
+			     i != access.registerWrites.end(); ++i )
+				nodeWrites[k].push_back( *i );
+			for( std::list<std::string>::const_iterator i = access.registerReads.begin();
+			     i != access.registerReads.end(); ++i )
+				nodeReads[k].push_back( *i );
+
+			static const char* accFieldNames = "xyzw";
+			if( access.implicitWrites & VU_RESOURCE_ACC )
+				for( unsigned int field = 0; field < 4; ++field )
+					if( access.accWriteFields & (1u << field) )
+						nodeWrites[k].push_back( std::string("@ACC.") + accFieldNames[field] );
+			if( access.implicitReads & VU_RESOURCE_ACC )
+				for( unsigned int field = 0; field < 4; ++field )
+					if( access.accReadFields & (1u << field) )
+						nodeReads[k].push_back( std::string("@ACC.") + accFieldNames[field] );
+			if( access.implicitWrites & VU_RESOURCE_Q )    nodeWrites[k].push_back( "@Q" );
+			if( access.implicitWrites & VU_RESOURCE_P )    nodeWrites[k].push_back( "@P" );
+			if( access.implicitWrites & VU_RESOURCE_R )    nodeWrites[k].push_back( "@R" );
+			if( access.implicitWrites & VU_RESOURCE_I )    nodeWrites[k].push_back( "@I" );
+			if( access.implicitWrites & VU_RESOURCE_MAC )  nodeWrites[k].push_back( "@MAC" );
+			if( access.implicitWrites & VU_RESOURCE_CLIP ) nodeWrites[k].push_back( "@CLIP" );
+			if( access.implicitReads & VU_RESOURCE_Q )     nodeReads[k].push_back( "@Q" );
+			if( access.implicitReads & VU_RESOURCE_P )     nodeReads[k].push_back( "@P" );
+			if( access.implicitReads & VU_RESOURCE_R )     nodeReads[k].push_back( "@R" );
+			if( access.implicitReads & VU_RESOURCE_I )     nodeReads[k].push_back( "@I" );
+			if( access.implicitReads & VU_RESOURCE_MAC )   nodeReads[k].push_back( "@MAC" );
+			if( access.implicitReads & VU_RESOURCE_CLIP )  nodeReads[k].push_back( "@CLIP" );
+		}
+
+		std::vector<std::string> resources;
+		std::vector<std::string> rotatedBases;
+		for( unsigned int k = 0; k < n; ++k )
+		{
+			for( unsigned int i = 0; i < nodeWrites[k].size(); ++i )
+				if( std::find( resources.begin(), resources.end(), nodeWrites[k][i] ) == resources.end() )
+					resources.push_back( nodeWrites[k][i] );
+			for( unsigned int i = 0; i < nodeReads[k].size(); ++i )
+				if( std::find( resources.begin(), resources.end(), nodeReads[k][i] ) == resources.end() )
+					resources.push_back( nodeReads[k][i] );
+			if( !dropRenamableVfCarried
+			    || mt[k] >= indexedTokens.size()
+			    || !indexedTokens[mt[k]]->operand()
+			    || !vuOpIsSplittableForKernelRenameByName(
+			           indexedTokens[mt[k]]->operand()->name() ) )
+				continue;
+			for( unsigned int i = 0; i < nodeWrites[k].size(); ++i )
+			{
+				const std::string base = registerBaseKey( nodeWrites[k][i] );
+				if( !base.empty()
+				    && base[0] != '@'
+				    && (base[0] == 'V' || base[0] == 'v')
+				    && std::find( rotatedBases.begin(), rotatedBases.end(), base )
+				       == rotatedBases.end() )
+					rotatedBases.push_back( base );
+			}
+		}
+
+		for( std::vector<std::string>::const_iterator resource = resources.begin();
+		     resource != resources.end(); ++resource )
+		{
+			const std::string resourceBase = registerBaseKey( *resource );
+			const bool dropCarried =
+			    dropRenamableVfCarried
+			    && std::find( rotatedBases.begin(), rotatedBases.end(), resourceBase )
+			       != rotatedBases.end();
+			std::vector<unsigned int> writers;
+			std::vector<unsigned int> readers;
+			for( unsigned int k = 0; k < n; ++k )
+			{
+				if( std::find( nodeWrites[k].begin(), nodeWrites[k].end(), *resource ) != nodeWrites[k].end() )
+					writers.push_back( k );
+				if( std::find( nodeReads[k].begin(), nodeReads[k].end(), *resource ) != nodeReads[k].end() )
+					readers.push_back( k );
+			}
+			if( writers.empty() )
+				continue;
+
+			for( std::vector<unsigned int>::const_iterator read = readers.begin();
+			     read != readers.end(); ++read )
+			{
+				unsigned int writer = writers.back();
+				unsigned int distance = 1;
+				for( std::vector<unsigned int>::const_iterator candidate = writers.begin();
+				     candidate != writers.end() && *candidate < *read; ++candidate )
+				{
+					writer = *candidate;
+					distance = 0;
+				}
+				if( distance == 1 && dropCarried )
+					continue;
+				if( mt[writer] >= indexedTokens.size() || mt[*read] >= indexedTokens.size() )
+					continue;
+				VuLatencyTracker tracker;
+				tracker.reset();
+				tracker.recordWrites( *indexedTokens[mt[writer]], 0 );
+				const int delay =
+				    tracker.readHazardDelay( *indexedTokens[mt[*read]], NULL, 0 );
+				edgeFrom.push_back( writer );
+				edgeTo.push_back( *read );
+				edgeDistance.push_back( distance );
+				edgeLatency.push_back( static_cast<unsigned int>( delay > 0 ? delay : 1 ) );
+			}
+
+			const bool deadImplicitFlag =
+			    (*resource == "@MAC" || *resource == "@CLIP") && readers.empty();
+			if( !deadImplicitFlag )
+			{
+				for( unsigned int w = 0; w < writers.size(); ++w )
+				{
+					const unsigned int writer = writers[w];
+					const unsigned int previous = w == 0 ? writers.back() : writers[w - 1];
+					const unsigned int distance = w == 0 ? 1 : 0;
+					if( distance == 1 && dropCarried )
+						continue;
+					edgeFrom.push_back( previous );
+					edgeTo.push_back( writer );
+					edgeDistance.push_back( distance );
+					edgeLatency.push_back( 1 );
+				}
+			}
+
+			for( std::vector<unsigned int>::const_iterator write = writers.begin();
+			     write != writers.end(); ++write )
+			{
+				unsigned int previousWriter = writers.back();
+				for( std::vector<unsigned int>::const_iterator candidate = writers.begin();
+				     candidate != writers.end() && *candidate < *write; ++candidate )
+					previousWriter = *candidate;
+				for( std::vector<unsigned int>::const_iterator read = readers.begin();
+				     read != readers.end(); ++read )
+				{
+					const bool sameIteration =
+					    previousWriter < *write
+					    ? (*read > previousWriter && *read < *write)
+					    : (*read < *write);
+					const bool previousIteration =
+					    previousWriter >= *write && *read > previousWriter;
+					if( !sameIteration && !previousIteration )
+						continue;
+					const unsigned int distance = previousIteration ? 1 : 0;
+					if( distance == 1 && dropCarried )
+						continue;
+					edgeFrom.push_back( *read );
+					edgeTo.push_back( *write );
+					edgeDistance.push_back( distance );
+					edgeLatency.push_back( 1 );
+				}
+			}
+		}
+	}
+
 	static void runVuKernelPlacerAndScaffolding(
 	    VuLoopPipelineOpportunity& opportunity,
 	    const std::vector<const Token*>& indexedTokens,
 	    const std::list<Token>& tokens,
-	    bool emitExpandedDDGDiagnostic = true )
+	    bool emitExpandedDDGDiagnostic = true,
+	    bool usePreciseRenamedRecMII = false )
 	{
 			// Track 9.G step 4d: iterative modulo placement (diagnostic).
 			// Drive the priority order into the Modulo Reservation Table.
@@ -7481,9 +7652,11 @@ namespace
 			// and is the diagnostic for the follow-on placer-relaxation step.
 			const bool useRenamedRecMII =
 			    ( std::getenv( "OPENVCL_USE_GENERIC_KERNEL_REWRITE" ) != NULL );
-			const unsigned int recmii = useRenamedRecMII
-			    ? computeLoopRecMIIRenamed( mt, indexedTokens, NULL )
-			    : computeLoopRecMII( mt, indexedTokens );
+			const unsigned int recmii = usePreciseRenamedRecMII
+			    ? computeLoopRecMIIPrecise( mt, indexedTokens, true, NULL )
+			    : ( useRenamedRecMII
+			        ? computeLoopRecMIIRenamed( mt, indexedTokens, NULL )
+			        : computeLoopRecMII( mt, indexedTokens ) );
 			const unsigned int resmii = computeLoopResMII( mt, indexedTokens );
 			const unsigned int mii    = ( recmii > resmii ) ? recmii : resmii;
 			LoopPriorityResult pr;
@@ -7542,49 +7715,63 @@ namespace
 				if( ir & VU_RESOURCE_MAC )  nodeReadsP[k].push_back( "@MAC" );
 				if( ir & VU_RESOURCE_CLIP ) nodeReadsP[k].push_back( "@CLIP" );
 			}
+
 			std::vector<unsigned int> dFrom, dTo, dDist, dLat;
-			for( unsigned int i = 0; i < n; ++i )
+			if( usePreciseRenamedRecMII )
 			{
-				for( unsigned int j = 0; j < n; ++j )
+				buildPreciseLoopPlacementEdges( mt,
+				                                indexedTokens,
+				                                true,
+				                                dFrom,
+				                                dTo,
+				                                dDist,
+				                                dLat );
+			}
+			else
+			{
+				for( unsigned int i = 0; i < n; ++i )
 				{
-					if( i == j ) continue;
-					const unsigned int dist = ( i < j ) ? 0u : 1u;
-					std::string sharedRaw;
-					for( unsigned int a = 0; a < nodeWritesP[i].size() && sharedRaw.empty(); ++a )
-						for( unsigned int b = 0; b < nodeReadsP[j].size() && sharedRaw.empty(); ++b )
-							if( nodeWritesP[i][a] == nodeReadsP[j][b] )
-								sharedRaw = nodeWritesP[i][a];
-					if( !sharedRaw.empty()
-					    && mt[i] < indexedTokens.size()
-					    && mt[j] < indexedTokens.size() )
+					for( unsigned int j = 0; j < n; ++j )
 					{
-						VuLatencyTracker tr;
-						tr.reset();
-						tr.recordWrites( *indexedTokens[mt[i]], 0 );
-						const int d = tr.readHazardDelay( *indexedTokens[mt[j]], NULL, 0 );
-						const unsigned int lat = static_cast<unsigned int>( d > 0 ? d : 1 );
-						dFrom.push_back( i ); dTo.push_back( j );
-						dDist.push_back( dist ); dLat.push_back( lat );
-					}
-					std::string sharedWaw;
-					for( unsigned int a = 0; a < nodeWritesP[i].size() && sharedWaw.empty(); ++a )
-						for( unsigned int b = 0; b < nodeWritesP[j].size() && sharedWaw.empty(); ++b )
-							if( nodeWritesP[i][a] == nodeWritesP[j][b] )
-								sharedWaw = nodeWritesP[i][a];
-					if( !sharedWaw.empty() )
-					{
-						dFrom.push_back( i ); dTo.push_back( j );
-						dDist.push_back( dist ); dLat.push_back( 1 );
-					}
-					std::string sharedWar;
-					for( unsigned int a = 0; a < nodeReadsP[i].size() && sharedWar.empty(); ++a )
-						for( unsigned int b = 0; b < nodeWritesP[j].size() && sharedWar.empty(); ++b )
-							if( nodeReadsP[i][a] == nodeWritesP[j][b] )
-								sharedWar = nodeReadsP[i][a];
-					if( !sharedWar.empty() )
-					{
-						dFrom.push_back( i ); dTo.push_back( j );
-						dDist.push_back( dist ); dLat.push_back( 1 );
+						if( i == j ) continue;
+						const unsigned int dist = ( i < j ) ? 0u : 1u;
+						std::string sharedRaw;
+						for( unsigned int a = 0; a < nodeWritesP[i].size() && sharedRaw.empty(); ++a )
+							for( unsigned int b = 0; b < nodeReadsP[j].size() && sharedRaw.empty(); ++b )
+								if( nodeWritesP[i][a] == nodeReadsP[j][b] )
+									sharedRaw = nodeWritesP[i][a];
+						if( !sharedRaw.empty()
+						    && mt[i] < indexedTokens.size()
+						    && mt[j] < indexedTokens.size() )
+						{
+							VuLatencyTracker tr;
+							tr.reset();
+							tr.recordWrites( *indexedTokens[mt[i]], 0 );
+							const int d = tr.readHazardDelay( *indexedTokens[mt[j]], NULL, 0 );
+							const unsigned int lat = static_cast<unsigned int>( d > 0 ? d : 1 );
+							dFrom.push_back( i ); dTo.push_back( j );
+							dDist.push_back( dist ); dLat.push_back( lat );
+						}
+						std::string sharedWaw;
+						for( unsigned int a = 0; a < nodeWritesP[i].size() && sharedWaw.empty(); ++a )
+							for( unsigned int b = 0; b < nodeWritesP[j].size() && sharedWaw.empty(); ++b )
+								if( nodeWritesP[i][a] == nodeWritesP[j][b] )
+									sharedWaw = nodeWritesP[i][a];
+						if( !sharedWaw.empty() )
+						{
+							dFrom.push_back( i ); dTo.push_back( j );
+							dDist.push_back( dist ); dLat.push_back( 1 );
+						}
+						std::string sharedWar;
+						for( unsigned int a = 0; a < nodeReadsP[i].size() && sharedWar.empty(); ++a )
+							for( unsigned int b = 0; b < nodeWritesP[j].size() && sharedWar.empty(); ++b )
+								if( nodeReadsP[i][a] == nodeWritesP[j][b] )
+									sharedWar = nodeReadsP[i][a];
+						if( !sharedWar.empty() )
+						{
+							dFrom.push_back( i ); dTo.push_back( j );
+							dDist.push_back( dist ); dLat.push_back( 1 );
+						}
 					}
 				}
 			}
@@ -9536,6 +9723,88 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 			classifyMultiQCyclicPrefixSuffixStoreDrains( opportunity,
 			                                             *loop,
 			                                             indexedTokens );
+
+		/*
+		 * The legacy MII diagnostics below are fed by the single-Q partition.
+		 * Multi-Q loops have no mainTokenIndices, even when the cyclic-prefix
+		 * analysis has a complete prolog/main partition. Expose the same lower
+		 * bounds over that complete body without changing planner eligibility or
+		 * emission. This is diagnostic-only: it must not become a profitability
+		 * gate or a substitute for PS2 runtime measurements.
+		 */
+		if( std::getenv( "OPENVCL_DUMP_MULTI_Q_LOOP_MII" ) != NULL
+		    && opportunity.simpleCountedLoop
+		    && opportunity.mainTokenIndices.empty()
+		    && !opportunity.multiQPrologTokenIndices.empty()
+		    && !opportunity.multiQMainTokenIndices.empty() )
+		{
+			std::vector<unsigned int> body;
+			body.reserve( opportunity.multiQPrologTokenIndices.size()
+			              + opportunity.multiQMainTokenIndices.size() );
+			body.insert( body.end(),
+			             opportunity.multiQPrologTokenIndices.begin(),
+			             opportunity.multiQPrologTokenIndices.end() );
+			body.insert( body.end(),
+			             opportunity.multiQMainTokenIndices.begin(),
+			             opportunity.multiQMainTokenIndices.end() );
+
+			const unsigned int recmii = computeLoopRecMII( body, indexedTokens );
+			const unsigned int preciseRecmii =
+			    computeLoopRecMIIPrecise( body, indexedTokens, false, NULL );
+			unsigned int preciseDropped = 0;
+			const unsigned int preciseRenamedRecmii =
+			    computeLoopRecMIIPrecise( body,
+			                              indexedTokens,
+			                              true,
+			                              &preciseDropped );
+			const unsigned int resmii = computeLoopResMII( body, indexedTokens );
+			unsigned int dropped = 0;
+			const unsigned int renamedRecmii =
+			    computeLoopRecMIIRenamed( body, indexedTokens, &dropped );
+			std::cerr << "[multi-q-loop-mii] loop=" << opportunity.label
+			          << " bodySize=" << body.size()
+			          << " recmii=" << recmii
+			          << " preciseRecmii=" << preciseRecmii
+			          << " resmii=" << resmii
+			          << " mii=" << ( recmii > resmii ? recmii : resmii )
+			          << " preciseRenamedRecmii=" << preciseRenamedRecmii
+			          << " preciseRenamedMii="
+			          << ( preciseRenamedRecmii > resmii ? preciseRenamedRecmii : resmii )
+			          << " preciseDroppedCarriedEdges=" << preciseDropped
+			          << " renamedRecmii=" << renamedRecmii
+			          << " renamedMii="
+			          << ( renamedRecmii > resmii ? renamedRecmii : resmii )
+			          << " droppedCarriedEdges=" << dropped
+			          << "\n";
+		}
+
+		if( std::getenv( "OPENVCL_DUMP_MULTI_Q_KERNEL_PROBE" ) != NULL
+		    && opportunity.simpleCountedLoop
+		    && opportunity.mainTokenIndices.empty()
+		    && !opportunity.multiQPrologTokenIndices.empty()
+		    && !opportunity.multiQMainTokenIndices.empty() )
+		{
+			VuLoopPipelineOpportunity probe = opportunity;
+			probe.mainTokenIndices.clear();
+			probe.mainTokenIndices.insert( probe.mainTokenIndices.end(),
+			                               opportunity.multiQPrologTokenIndices.begin(),
+			                               opportunity.multiQPrologTokenIndices.end() );
+			probe.mainTokenIndices.insert( probe.mainTokenIndices.end(),
+			                               opportunity.multiQMainTokenIndices.begin(),
+			                               opportunity.multiQMainTokenIndices.end() );
+			runVuKernelPlacerAndScaffolding( probe,
+			                                 indexedTokens,
+			                                 tokens,
+			                                 false,
+			                                 true );
+			std::cerr << "[multi-q-kernel-probe] loop=" << opportunity.label
+			          << " bodySize=" << probe.mainTokenIndices.size()
+			          << " II=" << probe.kernelRewriteII
+			          << " stages=" << probe.kernelRewriteStageCount
+			          << " conflicts=" << probe.kernelRewriteConflicts
+			          << " mainTokens=" << probe.kernelRewriteMainTokens.size()
+			          << "\n";
+		}
 
 		if( std::getenv( "OPENVCL_DUMP_PIPELINE_OPPORTUNITIES" ) != NULL )
 		{

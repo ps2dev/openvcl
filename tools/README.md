@@ -84,6 +84,17 @@ resource/recurrence lower bounds for no-Q cyclic-prefix candidates. The
 existing rename model can eliminate. These figures are lower-bound diagnostics,
 not measured PS2 cycles and not optimization gates.
 
+For simple counted multi-Q loops, `OPENVCL_DUMP_MULTI_Q_LOOP_MII=1` exposes
+the same coarse, field-precise, and rename-aware recurrence bounds over the
+complete prolog+main body. `OPENVCL_DUMP_MULTI_Q_KERNEL_PROBE=1` runs the
+existing modulo placer on a copy of that body using the precise rename-aware
+dependency edges and reports the achieved II/stage count without changing the
+normal rewrite decision or emitted VSM. This remains diagnostic-only: a gap
+between the lower bound and the placed II is not proof that the lower II is
+semantically realizable by the production rewrite. Combine the probe with
+`OPENVCL_DUMP_LOOP_BUMP_REASONS=1` to distinguish dependency-edge failures from
+MRT resource failures.
+
 Characterize those accepted no-Q rewrites against a completed baseline:
 
 ```sh

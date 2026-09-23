@@ -143,3 +143,14 @@ ya tienen tratamiento conservador de sus oportunidades locales de branch-delay.
 No se ha demostrado todavía un cyclic-prefix rentable para esos outer loops; el
 siguiente trabajo debe volver a priorizar candidatos por dependencia/coste del
 corpus, no por nombre de shader.
+
+La auditoría siguiente está centrada en multi-Q. Hay dos diagnósticos opt-in:
+`OPENVCL_DUMP_MULTI_Q_LOOP_MII=1` y
+`OPENVCL_DUMP_MULTI_Q_KERNEL_PROBE=1`. En `indexed/xform_loop_lid` el modelo
+preciso/rename-aware da `MII=52` frente a `RecMII=83`, pero el placer aún acaba
+en `II=83`; a II=52 los fallos son de dependencias, no de MRT. El cyclic-prefix
+forzado no debe promoverse: el VSM emitido estima 95 ciclos por iteración frente
+a 94 sin rewrite. Los probes de los 13 renderers no cambian ningún VSM del
+baseline `nested-loop-delay-002`. El siguiente trabajo debe investigar esa
+brecha del placer con reglas generales y validación diferencial antes de relajar
+dependencias o autoincrementos.

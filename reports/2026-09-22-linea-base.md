@@ -402,3 +402,16 @@ demostrado un cyclic-prefix rentable para los outer loops. No alterar latencias
 de hardware ni habilitar un pase experimental para conseguir una tabla
 favorable. No considerar ensamblado, invariancia de nombres o capturas visuales
 aisladas como prueba suficiente de equivalencia semántica.
+
+La siguiente priorización añade observabilidad equivalente para loops multi-Q
+simples sin cambiar codegen. El diagnóstico separa el `RecMII` histórico, el
+`RecMII` con recursos por campo, el límite tras eliminar únicamente recurrencias
+VF cubiertas por el modelo de renombrado existente y el II que consigue el
+placer con esas dependencias precisas. En `indexed/xform_loop_lid` el cuerpo de
+65 operaciones pasa de `RecMII=83` a `preciseRenamedMII=52` (`ResMII=38`), pero
+el placer todavía termina en `II=83`; a II=52 los fallos observados son de
+aristas de dependencia y no de ocupación MRT. La transformación cyclic-prefix
+forzada tampoco debe promoverse: el VSM emitido estima 95 ciclos por iteración
+frente a 94 sin rewrite. Los probes de los 13 renderers generan VSM bit a bit
+idéntico al baseline `nested-loop-delay-002`. Estas cifras son límites y
+estimaciones estáticas, no tiempos medidos en PS2.
