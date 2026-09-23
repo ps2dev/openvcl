@@ -172,3 +172,23 @@ siguen pasando. Esta corrección eleva el agregado estático default de 232531 a
 311872 (`indexed` 29757→34457, `general_quad` 25823→36488). Prioridad siguiente:
 recuperar scheduling mediante provenance/aliasing afín demostrable, no mediante
 nombres de bases distintos ni special-casing de shaders.
+
+El primer recovery afín ya está implementado de forma conservadora. El
+scheduler rastrea únicamente asignaciones `iaddiu/isubiu` con inmediato desde una
+misma raíz VI conocida dentro del bloque; cualquier escritura desconocida crea
+una raíz nueva. Dos accesos plain solo se consideran distintos cuando comparten
+raíz y su delta es no cero incluso módulo 256 QW, condición suficiente tanto
+para VU0 como para VU1. La misma prueba permite un loaded multi-Q suffix drain
+solo si los dos streams conservan además el mismo paso de loop demostrado.
+
+El fixture `vu1_affine_alias_differential` fuerza el reordenamiento seguro y pasa
+en PCSX2 con `VU1_DIFFERENTIAL_PASS affine-alias value=40e00000`. También siguen
+pasando `memory-alias`, `alias-induction` y `postincrement-prefix`. La suite host
+queda en **452/452 tests**. La baseline
+`build/baselines/affine-provenance-001` completa los 13 renderers y las cuatro
+variantes, pero sus **52 VSM son bit a bit idénticos** a
+`alias-correctness-003`; `indexed` sigue en 34457/34458. La invariancia default
+pasa 13/13. Por tanto este milestone recupera una capacidad genérica demostrada,
+pero todavía no recupera scheduling en `indexed/xform_loop_lid`; el siguiente
+trabajo debe identificar qué relaciones de provenance reales de ese loop quedan
+sin representar.

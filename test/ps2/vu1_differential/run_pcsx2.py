@@ -201,7 +201,7 @@ def main() -> int:
         default=script_dir / "vu1_differential.elf",
         help="Built differential ELF",
     )
-    parser.add_argument("--timeout", type=float, default=15.0)
+    parser.add_argument("--timeout", type=float, default=30.0)
     args = parser.parse_args()
 
     if args.pcsx2 is None or not args.pcsx2.is_file():

@@ -278,6 +278,16 @@ Elegir las primeras optimizaciones por evidencia, no por el nombre del shader.
 	   PCSX2 para 1, 2 y 4 iteraciones. Múltiples accesos incrementales, predecremento,
 	   branches no invertibles, escrituras adicionales o lecturas posteriores del
 	   base siguen bloqueados.
+	   La primera recuperación de aliasing afín ya está cubierta: cadenas locales
+	   de `iaddiu/isubiu` permiten demostrar que dos bases comparten raíz y difieren
+	   por un offset constante. El criterio exige delta no cero módulo 256 QW y
+	   mantiene conservadoras las raíces desconocidas y los pre/postincrementos.
+	   Para loaded multi-Q suffix drains exige además igual paso afín del loop.
+	   `vu1_affine_alias_differential` valida el reordenamiento en PCSX2 y los
+	   diferenciales de alias real/inducción/postincrement siguen pasando. La
+	   baseline `affine-provenance-001` no cambia ninguno de los 52 VSM frente a
+	   `alias-correctness-003`, así que `indexed/xform_loop_lid` aún requiere una
+	   relación de provenance real adicional antes de recuperar scheduling.
 
 **Entrega:** mejoras por categoría de bucle, cada una con casos positivos,
 negativos y diferenciales; fallback seguro cuando la transformación no es legal.

@@ -3641,18 +3641,287 @@ namespace
 		return false;
 	}
 
+	struct VuAffineViValue
+	{
+		std::string root;
+		long offset;
+
+		VuAffineViValue() : root(), offset( 0 ) {}
+		VuAffineViValue( const std::string& r, long o ) : root( r ), offset( o ) {}
+	};
+
+	typedef std::map<std::string, VuAffineViValue> VuAffineViState;
+
+	void resetAffineViState( VuAffineViState& state, const std::string& generation )
+	{
+		state.clear();
+		for( unsigned int reg = 0; reg < 16; ++reg )
+		{
+			char name[8];
+			std::snprintf( name, sizeof( name ), "VI%02u", reg );
+			state[name] = VuAffineViValue( generation + ":" + name, 0 );
+		}
+		state["VI00"] = VuAffineViValue( "VI00", 0 );
+	}
+
+	bool describeIntegerImmediateAssignment( const Token& token,
+	                                         std::string& dstReg,
+	                                         std::string& srcReg,
+	                                         long& step )
+	{
+		const std::string name = lowerVuTokenName( token );
+		if( name != "iaddiu" && name != "isubiu" )
+			return false;
+		const std::list<Token::Argument>& args = token.arguments();
+		if( args.size() != 3 )
+			return false;
+		std::list<Token::Argument>::const_iterator dst = args.begin();
+		std::list<Token::Argument>::const_iterator src = dst;
+		++src;
+		std::list<Token::Argument>::const_iterator imm = src;
+		++imm;
+		if( dst->type() != Token::Argument::INTEGER_REGISTER
+		    || src->type() != Token::Argument::INTEGER_REGISTER
+		    || imm->type() != Token::Argument::IMMEDIATE
+		    || !vuRegisterKey( *dst, dstReg )
+		    || !vuRegisterKey( *src, srcReg )
+		    || !parseImmediateLong( imm->immediate(), step ) )
+			return false;
+		if( name == "isubiu" )
+			step = -step;
+		return true;
+	}
+
+	void updateAffineViState( const Token& token,
+	                          unsigned int tokenIndex,
+	                          VuAffineViState& state )
+	{
+		std::string dstReg;
+		std::string srcReg;
+		long step = 0;
+		if( describeIntegerImmediateAssignment( token, dstReg, srcReg, step ) )
+		{
+			VuAffineViState::const_iterator src = state.find( srcReg );
+			if( src != state.end() )
+				state[dstReg] = VuAffineViValue( src->second.root, src->second.offset + step );
+			else
+				state[dstReg] = VuAffineViValue( "write:" + std::to_string( tokenIndex ) + ":" + dstReg, 0 );
+			return;
+		}
+
+		VuTokenResourceAccess access;
+		if( !buildVuTokenResourceAccess( token, access ) )
+			return;
+		for( std::list<std::string>::const_iterator write = access.registerWrites.begin();
+		     write != access.registerWrites.end(); ++write )
+		{
+			if( write->size() < 2 || write->substr( 0, 2 ) != "VI" || *write == "VI00" )
+				continue;
+			state[*write] = VuAffineViValue( "write:" + std::to_string( tokenIndex ) + ":" + *write, 0 );
+		}
+	}
+
+	void buildAffineViStateAtLoopEntry( const VuLoopCandidate& loop,
+	                                    const std::vector<const Token*>& indexedTokens,
+	                                    VuAffineViState& state )
+	{
+		unsigned int begin = loop.labelTokenIndex;
+		while( begin > 0 )
+		{
+			const Token& previous = *indexedTokens[begin - 1];
+			if( previous.label().length() != 0 || isVuSchedulingBarrier( previous ) )
+				break;
+			--begin;
+		}
+
+		resetAffineViState( state, "entry:" + std::to_string( begin ) );
+		for( unsigned int index = begin; index < loop.labelTokenIndex; ++index )
+			updateAffineViState( *indexedTokens[index], index, state );
+	}
+
+	bool affineAddressAtLoopToken( const VuLoopCandidate& loop,
+	                               const std::vector<const Token*>& indexedTokens,
+	                               const VuAffineViState& entryState,
+	                               const std::string& baseRegister,
+	                               long memoryOffset,
+	                               unsigned int tokenIndex,
+	                               VuAffineViValue& address )
+	{
+		if( tokenIndex < loop.labelTokenIndex || tokenIndex > loop.branchTokenIndex )
+			return false;
+		VuAffineViState state = entryState;
+		for( unsigned int index = loop.labelTokenIndex; index < tokenIndex; ++index )
+			updateAffineViState( *indexedTokens[index], index, state );
+		VuAffineViState::const_iterator base = state.find( baseRegister );
+		if( base == state.end() )
+			return false;
+		address = base->second;
+		address.offset += memoryOffset;
+		return true;
+	}
+
+	bool affineLoopStepForBase( const VuLoopCandidate& loop,
+	                            const std::vector<const Token*>& indexedTokens,
+	                            const VuAffineViState& entryState,
+	                            const std::string& baseRegister,
+	                            long& step )
+	{
+		VuAffineViState::const_iterator entry = entryState.find( baseRegister );
+		if( entry == entryState.end() )
+			return false;
+		VuAffineViState state = entryState;
+		for( unsigned int index = loop.labelTokenIndex;
+		     index <= loop.branchTokenIndex && index < indexedTokens.size(); ++index )
+			updateAffineViState( *indexedTokens[index], index, state );
+		VuAffineViState::const_iterator end = state.find( baseRegister );
+		if( end == state.end() || end->second.root != entry->second.root )
+			return false;
+		step = end->second.offset - entry->second.offset;
+		return true;
+	}
+
+	bool affineLoopMemoryAccessesAreDistinct( const VuSoftwarePipelineSuffixStore& store,
+	                                         unsigned int loadTokenIndex,
+	                                         const VuLoopCandidate& loop,
+	                                         const std::vector<const Token*>& indexedTokens,
+	                                         const VuAffineViState& entryState )
+	{
+		if( store.tokenIndex >= indexedTokens.size() || loadTokenIndex >= indexedTokens.size() )
+			return false;
+		VuTokenResourceAccess loadAccess;
+		if( !buildVuTokenResourceAccess( *indexedTokens[loadTokenIndex], loadAccess )
+		    || loadAccess.memoryKind != VU_MEMORY_LOAD
+		    || !loadAccess.hasMemoryBase || !loadAccess.hasMemoryOffset
+		    || !store.hasMemoryBase || !store.hasMemoryOffset )
+			return false;
+
+		VuAffineViValue storeAddress;
+		VuAffineViValue loadAddress;
+		if( !affineAddressAtLoopToken( loop, indexedTokens, entryState,
+		                              store.memoryBaseRegister, store.memoryOffset,
+		                              store.tokenIndex, storeAddress )
+		    || !affineAddressAtLoopToken( loop, indexedTokens, entryState,
+		                                 loadAccess.memoryBaseRegister, loadAccess.memoryOffset,
+		                                 loadTokenIndex, loadAddress )
+		    || storeAddress.root != loadAddress.root )
+			return false;
+
+		long storeStep = 0;
+		long loadStep = 0;
+		if( !affineLoopStepForBase( loop, indexedTokens, entryState,
+		                           store.memoryBaseRegister, storeStep )
+		    || !affineLoopStepForBase( loop, indexedTokens, entryState,
+		                              loadAccess.memoryBaseRegister, loadStep )
+		    || storeStep != loadStep )
+			return false;
+
+		// VU0 has the smaller VU data memory (256 qwords). Requiring the
+		// address delta to remain non-zero modulo 256 is therefore sufficient
+		// for both VU0 and VU1 address wrapping.
+		const long delta = storeAddress.offset - loadAddress.offset;
+		return (delta % 256) != 0;
+	}
+
+	bool tokenRangeHasUnprovenMemoryDependencyWithStore(
+	    const VuSoftwarePipelineSuffixStore& store,
+	    unsigned int beginIndex,
+	    unsigned int endIndex,
+	    const std::vector<const Token*>& indexedTokens,
+	    const std::vector<VuSoftwarePipelineSuffixStore>& stores,
+	    const std::vector<VuLoopInductionUpdate>& inductionUpdates,
+	    const VuLoopCandidate& loop,
+	    const VuAffineViState& entryState )
+	{
+		for( unsigned int tokenIndex = beginIndex;
+		     tokenIndex <= endIndex && tokenIndex < indexedTokens.size();
+		     ++tokenIndex )
+		{
+			if( tokenIndex == store.tokenIndex || delayedSuffixStoreForTokenIndex( stores, tokenIndex ) )
+				continue;
+			if( !tokenRangeHasMemoryDependencyWithStore( store,
+			                                             tokenIndex,
+			                                             tokenIndex,
+			                                             indexedTokens,
+			                                             stores,
+			                                             inductionUpdates ) )
+				continue;
+			if( affineLoopMemoryAccessesAreDistinct( store,
+			                                        tokenIndex,
+			                                        loop,
+			                                        indexedTokens,
+			                                        entryState ) )
+				continue;
+			return true;
+		}
+		return false;
+	}
+
+	bool affineBlockMemoryAccessesAreDistinct(
+	    const VuTokenResourceAccess& beforeAccess,
+	    const VuTokenResourceAccess& afterAccess,
+	    unsigned int beforeIndex,
+	    unsigned int afterIndex,
+	    const std::vector<VuAffineViState>& statesBeforeToken )
+	{
+		if( beforeIndex >= statesBeforeToken.size() || afterIndex >= statesBeforeToken.size()
+		    || !beforeAccess.hasMemoryBase || !afterAccess.hasMemoryBase
+		    || !beforeAccess.hasMemoryOffset || !afterAccess.hasMemoryOffset
+		    || beforeAccess.memoryFlags != VU_MEMORY_FLAG_NONE
+		    || afterAccess.memoryFlags != VU_MEMORY_FLAG_NONE )
+			return false;
+
+		VuAffineViState::const_iterator beforeBase =
+		    statesBeforeToken[beforeIndex].find( beforeAccess.memoryBaseRegister );
+		VuAffineViState::const_iterator afterBase =
+		    statesBeforeToken[afterIndex].find( afterAccess.memoryBaseRegister );
+		if( beforeBase == statesBeforeToken[beforeIndex].end()
+		    || afterBase == statesBeforeToken[afterIndex].end()
+		    || beforeBase->second.root != afterBase->second.root )
+			return false;
+
+		const long beforeOffset = beforeBase->second.offset + beforeAccess.memoryOffset;
+		const long afterOffset = afterBase->second.offset + afterAccess.memoryOffset;
+		return ((beforeOffset - afterOffset) % 256) != 0;
+	}
+
 	bool suffixStoreHasReadWriteMemoryStreamConflict( const VuSoftwarePipelineSuffixStore& store,
 	                                                  const VuLoopPipelineOpportunity& opportunity,
+	                                                  const VuLoopCandidate& loop,
 	                                                  const std::vector<const Token*>& indexedTokens )
 	{
 		if( !store.hasMemoryBase )
 			return true;
-		return tokenIndicesHaveReadWriteMemoryConflictWithStore( store,
-		                                                           opportunity.multiQMainTokenIndices,
-		                                                           indexedTokens )
-		    || tokenIndicesHaveReadWriteMemoryConflictWithStore( store,
-		                                                       opportunity.multiQCyclicPrefixTokenIndices,
-		                                                       indexedTokens );
+
+		VuAffineViState entryState;
+		buildAffineViStateAtLoopEntry( loop, indexedTokens, entryState );
+		const std::vector<unsigned int>* ranges[2] = {
+			&opportunity.multiQMainTokenIndices,
+			&opportunity.multiQCyclicPrefixTokenIndices
+		};
+		for( unsigned int range = 0; range < 2; ++range )
+		{
+			for( std::vector<unsigned int>::const_iterator tokenIndex = ranges[range]->begin();
+			     tokenIndex != ranges[range]->end(); ++tokenIndex )
+			{
+				if( *tokenIndex >= indexedTokens.size() )
+					continue;
+				VuTokenResourceAccess access;
+				if( !buildVuTokenResourceAccess( *indexedTokens[*tokenIndex], access )
+				    || access.memoryKind != VU_MEMORY_LOAD )
+					continue;
+				if( !tokenIndicesHaveReadWriteMemoryConflictWithStore(
+				        store, std::vector<unsigned int>( 1, *tokenIndex ), indexedTokens ) )
+					continue;
+				if( affineLoopMemoryAccessesAreDistinct( store,
+				                                        *tokenIndex,
+				                                        loop,
+				                                        indexedTokens,
+				                                        entryState ) )
+					continue;
+				return true;
+			}
+		}
+		return false;
 	}
 
 	bool loadedMultiQDrainLeavesPartialStoreStream(
@@ -3737,6 +4006,8 @@ namespace
 		                               opportunity.multiQCyclicPrefixRotations,
 		                               opportunity.softwarePipelineSuffixStores,
 		                               used );
+		VuAffineViState entryState;
+		buildAffineViStateAtLoopEntry( loop, indexedTokens, entryState );
 
 		bool readWriteMemoryStreamConflict = false;
 		for( std::vector<VuSoftwarePipelineSuffixStore>::iterator store =
@@ -3753,6 +4024,7 @@ namespace
 				continue;
 			if( suffixStoreHasReadWriteMemoryStreamConflict( *store,
 			                                                 opportunity,
+			                                                 loop,
 			                                                 indexedTokens ) )
 			{
 				readWriteMemoryStreamConflict = true;
@@ -3762,12 +4034,15 @@ namespace
 			                                                | Token::T | Token::BRANCH_DELAY_FILLER) )
 				continue;
 
-			if( tokenRangeHasMemoryDependencyWithStore( *store,
-			                                           store->tokenIndex + 1,
-			                                           opportunity.branchTokenIndex,
-			                                           indexedTokens,
-			                                           opportunity.softwarePipelineSuffixStores,
-			                                           opportunity.inductionUpdates ) )
+			if( tokenRangeHasUnprovenMemoryDependencyWithStore(
+			        *store,
+			        store->tokenIndex + 1,
+			        opportunity.branchTokenIndex,
+			        indexedTokens,
+			        opportunity.softwarePipelineSuffixStores,
+			        opportunity.inductionUpdates,
+			        loop,
+			        entryState ) )
 				continue;
 
 			std::list<std::string> valueKeys;
@@ -6913,11 +7188,18 @@ std::vector<VuDependencyEdge> buildVuDependencyGraph( const VuBasicBlock& block,
 {
 	std::vector<VuDependencyEdge> edges;
 	std::vector<VuTokenResourceAccess> accesses;
+	std::vector<VuAffineViState> affineStatesBeforeToken;
+	VuAffineViState affineState;
+	resetAffineViState( affineState, "block" );
 	for( std::vector<const Token*>::const_iterator i = block.tokens.begin(); i != block.tokens.end(); ++i )
 	{
+		affineStatesBeforeToken.push_back( affineState );
 		VuTokenResourceAccess access;
 		buildVuTokenResourceAccess( **i, access );
 		accesses.push_back( access );
+		updateAffineViState( **i,
+		                     static_cast<unsigned int>( accesses.size() - 1 ),
+		                     affineState );
 	}
 
 	for( unsigned int before = 0; before < accesses.size(); ++before )
@@ -6952,7 +7234,12 @@ std::vector<VuDependencyEdge> buildVuDependencyGraph( const VuBasicBlock& block,
 			if( memoryOrderRequiresDependency( a,
 			                                  b,
 			                                  *block.tokens[before],
-			                                  *block.tokens[after] ) )
+			                                  *block.tokens[after] )
+			    && !affineBlockMemoryAccessesAreDistinct( a,
+			                                               b,
+			                                               before,
+			                                               after,
+			                                               affineStatesBeforeToken ) )
 				addEdge( edges, before, after, VU_DEPENDENCY_MEMORY );
 		}
 	}

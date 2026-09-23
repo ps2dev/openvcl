@@ -202,6 +202,23 @@ the fix is `VU1_DIFFERENTIAL_PASS memory-alias value=42280000`. Any future
 recovery of cross-base scheduling must therefore carry an independent affine or
 provenance proof; a different VI name is insufficient.
 
+The affine-alias fixture covers the first such recovery. It derives one VI base
+from another with a constant `iaddiu`, then removes a barrier so the scheduler is
+required to move a load across a store whose effective addresses are provably
+different:
+
+```sh
+make -C test/ps2/vu1_affine_alias_differential
+python3 test/ps2/vu1_differential/run_pcsx2.py \
+  --elf test/ps2/vu1_affine_alias_differential/vu1_affine_alias_differential.elf
+```
+
+The expected marker is `VU1_DIFFERENTIAL_PASS affine-alias value=40e00000`.
+Only bases with a tracked common VI root and a non-zero constant delta are
+treated as disjoint; unrelated roots, unknown writes and pre/postincrement
+accesses remain conservative. The same proof is also used by loaded multi-Q
+suffix drains when both streams preserve the same proven affine loop step.
+
 The guarded postincrement-prefix fixture covers the separate multi-Q case where
 the cyclic prefix itself contains one `LQI (...base++)` and the loop branch
 uses that same base as its induction value:

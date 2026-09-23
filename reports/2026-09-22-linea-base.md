@@ -444,3 +444,31 @@ a 26853 y `general_quad` de 25823 a 36488. Estas son estimaciones estáticas, no
 tiempos medidos. El siguiente trabajo debe recuperar únicamente relaciones de
 dirección demostrables (por ejemplo, raíces comunes más offsets afines), nunca
 restaurar la heurística `different VI => no alias`.
+
+## Primera recuperación por provenance afín
+
+El scheduler puede volver a eliminar dependencias de memoria entre bases VI
+distintas cuando existe una prueba independiente: ambas bases deben derivarse de
+la misma raíz mediante una cadena local de `iaddiu/isubiu` con inmediatos
+conocidos. Las escrituras VI no comprendidas invalidan la relación creando una
+raíz nueva. Para accesos plain, un delta de dirección no cero módulo 256 QW es
+una prueba conservadora de separación tanto en VU0 como en VU1. En los loaded
+multi-Q suffix drains se exige además que ambos streams tengan el mismo paso de
+loop demostrado, de modo que el delta permanezca constante entre iteraciones.
+
+El diferencial `test/ps2/vu1_affine_alias_differential` elimina una barrera,
+comprueba que el candidato adelanta el load sobre el store y valida en PCSX2
+`VU1_DIFFERENTIAL_PASS affine-alias value=40e00000`. Los diferenciales
+`memory-alias`, `alias-induction` y `postincrement-prefix` continúan pasando, por
+lo que raíces desconocidas, alias real e incrementos implícitos siguen cubiertos
+por oráculos negativos/independientes. La suite host queda en **452/452 tests**.
+
+`build/baselines/affine-provenance-001/` completa los 13 renderers y las cuatro
+variantes. Sus **52 VSM son bit a bit idénticos** a
+`build/baselines/alias-correctness-003/`, y por ello las métricas tampoco cambian:
+`indexed` permanece en 34457 default frente a 34458 no-pipeline. La comprobación
+de invariancia de labels default pasa 13/13. Este resultado es deliberadamente
+un milestone de corrección/capacidad: todavía no prueba una mejora de rendimiento
+ni desbloquea `indexed/xform_loop_lid`. El siguiente paso es caracterizar las
+raíces VI efectivas de ese loop y extender provenance solo donde pueda
+demostrarse sin asumir que registros distintos son streams distintos.
