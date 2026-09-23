@@ -8545,11 +8545,31 @@ namespace
 						std::cerr << "[loop-bump-node] loop=" << opportunity.label
 						          << " bumpFrom=" << tryII
 						          << " node=" << k
+						          << " tokenIndex=" << tokIdx
 						          << " op=" << opName
 						          << " pipe=" << pname
 						          << " edgeFails=" << edgeFailsN[k]
 						          << " mrtFails=" << mrtFailsN[k]
 						          << "\n";
+						if( tokIdx < indexedTokens.size() )
+						{
+							VuTokenResourceAccess failedAccess;
+							if( buildVuTokenResourceAccess( *indexedTokens[tokIdx], failedAccess ) )
+							{
+								std::cerr << "[loop-bump-node-resources] loop=" << opportunity.label
+								          << " node=" << k << " reads=";
+								for( std::list<std::string>::const_iterator read =
+								         failedAccess.registerReads.begin();
+								     read != failedAccess.registerReads.end(); ++read )
+									std::cerr << ( read == failedAccess.registerReads.begin() ? "" : "," ) << *read;
+								std::cerr << " writes=";
+								for( std::list<std::string>::const_iterator write =
+								         failedAccess.registerWrites.begin();
+								     write != failedAccess.registerWrites.end(); ++write )
+									std::cerr << ( write == failedAccess.registerWrites.begin() ? "" : "," ) << *write;
+								std::cerr << "\n";
+							}
+						}
 						// Track 9.G step 1d-2: also dump every DDG edge
 						// incident on this failed node so the carrier
 						// recurrence is visible. Helps decide which
@@ -8572,6 +8592,7 @@ namespace
 							          << " node=" << k
 							          << " dir=" << ( dFrom[e] == k ? "out" : "in" )
 							          << " other=" << other
+							          << " otherTokenIndex=" << ( other < n ? mt[other] : 0 )
 							          << " otherOp=" << otherOp
 							          << " lat=" << dLat[e]
 							          << " dist=" << dDist[e]
