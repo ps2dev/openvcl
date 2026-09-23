@@ -117,8 +117,11 @@ namespace
 		if( !memoryBaseRegisterKey(a, movedBase) || !memoryBaseRegisterKey(b, crossedBase) )
 			return false;
 
+		// Different VI registers are not, by themselves, an alias proof: two
+		// registers can hold the same VU-memory address at runtime.  Only
+		// compare constant offsets when both accesses share the same base.
 		if( movedBase != crossedBase )
-			return true;
+			return false;
 
 		long movedOffset = 0;
 		long crossedOffset = 0;

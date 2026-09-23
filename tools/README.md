@@ -186,6 +186,22 @@ requires the final output pointer to be 40. The expected marker is
 steps and pre/postincrement instructions cloned into the cyclic prefix remain
 outside this proof.
 
+The memory-alias fixture guards the more fundamental rule that different VI
+register names are not a no-alias proof. It deliberately gives two base
+registers the same runtime VU1 address, with a store followed by a load:
+
+```sh
+make -C test/ps2/vu1_memory_alias_differential
+python3 test/ps2/vu1_differential/run_pcsx2.py \
+  --elf test/ps2/vu1_memory_alias_differential/vu1_memory_alias_differential.elf
+```
+
+Before the conservative alias fix, normal scheduling moved the load ahead of
+the store and PCSX2 observed `1.0` instead of `42.0`. The expected marker after
+the fix is `VU1_DIFFERENTIAL_PASS memory-alias value=42280000`. Any future
+recovery of cross-base scheduling must therefore carry an independent affine or
+provenance proof; a different VI name is insufficient.
+
 The guarded postincrement-prefix fixture covers the separate multi-Q case where
 the cyclic prefix itself contains one `LQI (...base++)` and the loop branch
 uses that same base as its induction value:

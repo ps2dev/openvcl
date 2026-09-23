@@ -2161,7 +2161,7 @@ TEST_CASE("VuSchedulerAnalysis: postincrement deferral rejects later base reads"
                     "pre_or_post_increment_memory"));
 }
 
-TEST_CASE("VuSchedulerAnalysis: loaded multi-Q suffix drains rotate values across the prolog boundary")
+TEST_CASE("VuSchedulerAnalysis: loaded multi-Q suffix drains reject unproven separate bases")
 {
     vcl::Error::ResetErrorCount();
     ParsedProgram program;
@@ -2195,68 +2195,19 @@ TEST_CASE("VuSchedulerAnalysis: loaded multi-Q suffix drains rotate values acros
     REQUIRE(opportunities.size() == 1u);
     CHECK(opportunities[0].memoryLoadCount == 1u);
     CHECK(opportunities[0].hasMultiQSoftwarePipelinePlan);
-    CHECK(opportunities[0].canEmitMultiQSoftwarePipeline);
-    CHECK(opportunities[0].hasSuffixStoreDrainPlan);
-    CHECK(opportunities[0].canEmitSuffixStoreDrain);
-    CHECK(!hasString(opportunities[0].suffixStoreDrainBlockers,
-                     "loaded_multi_q_boundary_rotation"));
-    REQUIRE(opportunities[0].softwarePipelineSuffixStores.size() == 1u);
-    CHECK(opportunities[0].softwarePipelineSuffixStores[0].delayedDrain);
-    CHECK(opportunities[0].softwarePipelineSuffixStores[0].requiresValueRotation);
-    CHECK(opportunities[0].softwarePipelineSuffixStores[0].hasValueScratchRegister);
+	CHECK(!opportunities[0].canEmitMultiQSoftwarePipeline);
+	CHECK(opportunities[0].hasSuffixStoreDrainPlan);
+	CHECK(!opportunities[0].canEmitSuffixStoreDrain);
+	CHECK(hasString(opportunities[0].suffixStoreDrainBlockers,
+	                "read_write_memory_stream_conflict"));
+	CHECK(hasString(opportunities[0].multiQSoftwarePipelineBlockers,
+	                "read_write_memory_stream_conflict"));
+	REQUIRE(opportunities[0].softwarePipelineSuffixStores.size() == 1u);
+	CHECK(!opportunities[0].softwarePipelineSuffixStores[0].delayedDrain);
 
-    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans =
-        vcl::buildVuSoftwarePipelineRewritePlans(program.tokenizer.tokens());
-    REQUIRE(plans.size() == 1u);
-    CHECK(plans[0].drainsSuffixStores);
-
-    std::list<vcl::Token> transformed =
-        vcl::applyVuSoftwarePipelinePlans(program.tokenizer.tokens());
-
-    bool sawProlog = false;
-    bool sawMain = false;
-    bool sawDrain = false;
-    bool sawInvertedBranch = false;
-    bool sawBoundaryQProducer = false;
-    bool sawMainDelayedStore = false;
-    bool sawDrainDelayedStore = false;
-    for (std::list<vcl::Token>::const_iterator i = transformed.begin(); i != transformed.end(); ++i)
-    {
-        if (i->label() == "loop_lid__PROLOG")
-            sawProlog = true;
-        if (i->label() == "loop_lid")
-            sawMain = true;
-        if (i->label() == "loop_lid__DRAIN")
-        {
-            sawMain = false;
-            sawDrain = true;
-        }
-
-        const std::string mnemonic = vcl::normalizeVuMnemonic(i->name());
-        if (mnemonic == "ibeq" && tokenBranchesTo(*i, "loop_lid__DRAIN"))
-        {
-            sawInvertedBranch = true;
-            std::list<vcl::Token>::const_iterator next = i;
-            ++next;
-            REQUIRE(next != transformed.end());
-            if ((next->flags() & vcl::Token::BRANCH_DELAY_FILLER) != 0)
-            {
-                CHECK(vcl::normalizeVuMnemonic(next->name()) == "div");
-                sawBoundaryQProducer = true;
-            }
-        }
-        if (sawMain && mnemonic == "sq")
-            sawMainDelayedStore = true;
-        if (sawDrain && mnemonic == "sq")
-            sawDrainDelayedStore = true;
-    }
-
-    CHECK(sawProlog);
-    CHECK(sawInvertedBranch);
-    CHECK(sawBoundaryQProducer);
-    CHECK(sawMainDelayedStore);
-    CHECK(sawDrain);
-    CHECK(sawDrainDelayedStore);
+	std::vector<vcl::VuSoftwarePipelineRewritePlan> plans =
+	    vcl::buildVuSoftwarePipelineRewritePlans(program.tokenizer.tokens());
+	CHECK(plans.empty());
 }
 
 TEST_CASE("VuSchedulerAnalysis: multi-Q suffix drains keep same-base load and store streams ordered")
@@ -2299,7 +2250,7 @@ TEST_CASE("VuSchedulerAnalysis: multi-Q suffix drains keep same-base load and st
         CHECK(!i->delayedDrain);
 }
 
-TEST_CASE("VuSchedulerAnalysis: loaded multi-Q multi-store drains rotate separated streams")
+TEST_CASE("VuSchedulerAnalysis: loaded multi-Q multi-store drains reject unproven separate bases")
 {
     vcl::Error::ResetErrorCount();
     ParsedProgram program;
@@ -2333,23 +2284,22 @@ TEST_CASE("VuSchedulerAnalysis: loaded multi-Q multi-store drains rotate separat
         vcl::findVuLoopPipelineOpportunities(program.tokenizer.tokens());
     REQUIRE(opportunities.size() == 1u);
     CHECK(opportunities[0].hasSuffixStoreDrainPlan);
-    CHECK(opportunities[0].canEmitSuffixStoreDrain);
-    CHECK(opportunities[0].canEmitMultiQSoftwarePipeline);
-    CHECK(!hasString(opportunities[0].suffixStoreDrainBlockers,
-                     "multi_store_loaded_suffix_stream"));
-    CHECK(!hasString(opportunities[0].multiQSoftwarePipelineBlockers,
-                     "multi_store_loaded_suffix_stream"));
+	CHECK(!opportunities[0].canEmitSuffixStoreDrain);
+	CHECK(!opportunities[0].canEmitMultiQSoftwarePipeline);
+	CHECK(hasString(opportunities[0].suffixStoreDrainBlockers,
+	                "read_write_memory_stream_conflict"));
+	CHECK(hasString(opportunities[0].multiQSoftwarePipelineBlockers,
+	                "read_write_memory_stream_conflict"));
 
     REQUIRE(opportunities[0].softwarePipelineSuffixStores.size() == 2u);
     for (std::vector<vcl::VuSoftwarePipelineSuffixStore>::const_iterator i =
              opportunities[0].softwarePipelineSuffixStores.begin();
          i != opportunities[0].softwarePipelineSuffixStores.end(); ++i)
-        CHECK(i->delayedDrain);
+		CHECK(!i->delayedDrain);
 
     std::vector<vcl::VuSoftwarePipelineRewritePlan> plans =
         vcl::buildVuSoftwarePipelineRewritePlans(program.tokenizer.tokens());
-    REQUIRE(plans.size() == 1u);
-    CHECK(plans[0].drainsSuffixStores);
+	CHECK(plans.empty());
 }
 
 TEST_CASE("VuSchedulerAnalysis: suffix-store aliasing accounts for known base induction")
@@ -2369,10 +2319,7 @@ TEST_CASE("VuSchedulerAnalysis: suffix-store aliasing accounts for known base in
     REQUIRE(program.parse("sq.xyz vf05, 0(vi03)"));
     REQUIRE(program.parse("iaddiu vi03, vi03, 1"));
     REQUIRE(program.parse("sq.xyz vf02, 0(vi03)"));
-    REQUIRE(program.parse("lq.xyz vf24, 0(vi04)"));
-    REQUIRE(program.parse("add.xyz vf05, vf24, vf00"));
-    REQUIRE(program.parse("iaddiu vi04, vi04, 1"));
-    REQUIRE(program.parse("iaddiu vi03, vi03, 1"));
+	REQUIRE(program.parse("iaddiu vi03, vi03, 1"));
     REQUIRE(program.parse("iaddiu vi01, vi01, 1"));
     REQUIRE(program.parse("ibne vi01, vi02, loop_lid"));
 
@@ -2416,10 +2363,7 @@ TEST_CASE("VuSchedulerAnalysis: suffix-store aliasing rejects unmodelled base wr
     REQUIRE(program.parse("iadd vi03, vi03, vi06"));
     REQUIRE(program.parse("iaddiu vi03, vi03, 1"));
     REQUIRE(program.parse("sq.xyz vf02, 0(vi03)"));
-    REQUIRE(program.parse("lq.xyz vf24, 0(vi04)"));
-    REQUIRE(program.parse("add.xyz vf05, vf24, vf00"));
-    REQUIRE(program.parse("iaddiu vi04, vi04, 1"));
-    REQUIRE(program.parse("iaddiu vi03, vi03, 1"));
+	REQUIRE(program.parse("iaddiu vi03, vi03, 1"));
     REQUIRE(program.parse("iaddiu vi01, vi01, 1"));
     REQUIRE(program.parse("ibne vi01, vi02, loop_lid"));
 
@@ -2430,17 +2374,14 @@ TEST_CASE("VuSchedulerAnalysis: suffix-store aliasing rejects unmodelled base wr
             i->setFlags(i->flags() | vcl::Token::PROCESSED);
     }
 
-    std::vector<vcl::VuLoopPipelineOpportunity> opportunities =
-        vcl::findVuLoopPipelineOpportunities(program.tokenizer.tokens());
-    REQUIRE(opportunities.size() == 1u);
-    CHECK(hasString(opportunities[0].multiQSoftwarePipelineBlockers,
-                    "partial_loaded_suffix_store_stream"));
-    CHECK(hasString(opportunities[0].suffixStoreDrainBlockers,
-                    "partial_loaded_suffix_store_stream"));
-    for (std::vector<vcl::VuSoftwarePipelineSuffixStore>::const_iterator store =
-             opportunities[0].softwarePipelineSuffixStores.begin();
-         store != opportunities[0].softwarePipelineSuffixStores.end(); ++store)
-        CHECK(!store->delayedDrain);
+	std::vector<vcl::VuLoopPipelineOpportunity> opportunities =
+	    vcl::findVuLoopPipelineOpportunities(program.tokenizer.tokens());
+	REQUIRE(opportunities.size() == 1u);
+	CHECK(opportunities[0].canEmitMultiQSoftwarePipeline);
+	CHECK(opportunities[0].canEmitSuffixStoreDrain);
+	REQUIRE(opportunities[0].softwarePipelineSuffixStores.size() == 2u);
+	CHECK(!opportunities[0].softwarePipelineSuffixStores[0].delayedDrain);
+	CHECK(opportunities[0].softwarePipelineSuffixStores[1].delayedDrain);
 }
 
 TEST_CASE("VuSchedulerAnalysis: generic cyclic prefixes can rotate no-Q counted loops")
@@ -3047,16 +2988,18 @@ TEST_CASE("VuSchedulerAnalysis: dependency graph compares plain memory descripto
 {
     vcl::Error::ResetErrorCount();
     ParsedProgram program;
-    REQUIRE(program.parse("sq.xy vf01, 0(vi01)"));
-    REQUIRE(program.parse("lq.xy vf02, 4(vi01)"));
-    REQUIRE(program.parse("lq.xy vf03, 0(vi01)"));
+	REQUIRE(program.parse("sq.xy vf01, 0(vi01)"));
+	REQUIRE(program.parse("lq.xy vf02, 4(vi01)"));
+	REQUIRE(program.parse("lq.xy vf03, 0(vi01)"));
+	REQUIRE(program.parse("lq.xy vf04, 0(vi02)"));
 
     std::vector<vcl::VuBasicBlock> blocks = vcl::buildVuBasicBlocks(program.tokenizer.tokens());
     REQUIRE(blocks.size() == 1u);
 
     std::vector<vcl::VuDependencyEdge> edges = vcl::buildVuDependencyGraph(blocks[0]);
-    CHECK(!hasEdge(edges, 0u, 1u, vcl::VU_DEPENDENCY_MEMORY));
-    CHECK(hasEdge(edges, 0u, 2u, vcl::VU_DEPENDENCY_MEMORY));
+	CHECK(!hasEdge(edges, 0u, 1u, vcl::VU_DEPENDENCY_MEMORY));
+	CHECK(hasEdge(edges, 0u, 2u, vcl::VU_DEPENDENCY_MEMORY));
+	CHECK(hasEdge(edges, 0u, 3u, vcl::VU_DEPENDENCY_MEMORY));
 }
 
 TEST_CASE("VuSchedulerAnalysis: preserve-order scheduler keeps block order intact")
@@ -3523,7 +3466,7 @@ TEST_CASE("VuSchedulerAnalysis: ready-set scheduler weights dependency chains by
     CHECK(vcl::normalizeVuMnemonic(i->name()) == "ftoi0");
 }
 
-TEST_CASE("VuSchedulerAnalysis: ready-set scheduler moves distinct-address loads before stores")
+TEST_CASE("VuSchedulerAnalysis: ready-set scheduler moves same-base distinct-offset loads before stores")
 {
     vcl::Error::ResetErrorCount();
     ParsedProgram program;
@@ -3543,6 +3486,25 @@ TEST_CASE("VuSchedulerAnalysis: ready-set scheduler moves distinct-address loads
     ++i;
     REQUIRE(i != scheduled.end());
     CHECK(vcl::normalizeVuMnemonic(i->name()) == "mul");
+}
+
+TEST_CASE("VuSchedulerAnalysis: ready-set scheduler preserves stores across potentially aliasing bases")
+{
+	vcl::Error::ResetErrorCount();
+	ParsedProgram program;
+	REQUIRE(program.parse("sq.xy vf01, 0(vi01)"));
+	REQUIRE(program.parse("lq.xy vf02, 0(vi02)"));
+	REQUIRE(program.parse("mul.xy vf03, vf02, vf04"));
+
+	std::list<vcl::Token> scheduled = vcl::scheduleVuTokensReadySet(program.tokenizer.tokens());
+	REQUIRE(scheduled.size() == program.tokenizer.tokens().size());
+
+	std::list<vcl::Token>::const_iterator i = scheduled.begin();
+	REQUIRE(i != scheduled.end());
+	CHECK(vcl::normalizeVuMnemonic(i->name()) == "sq");
+	++i;
+	REQUIRE(i != scheduled.end());
+	CHECK(vcl::normalizeVuMnemonic(i->name()) == "lq");
 }
 
 TEST_CASE("VuSchedulerAnalysis: ready-set scheduler keeps same-address loads behind stores")

@@ -1478,24 +1478,17 @@ TEST_CASE("Software pipeline: generic multi-Q prefixes emit delayed suffix store
     CHECK(blockContains(vsm, "loop_lid__DRAIN", "sq.xyz VF05, -2(VI03)"));
 }
 
-TEST_CASE("Software pipeline: loaded generic multi-Q drains prime the prolog branch boundary")
+TEST_CASE("Software pipeline: loaded generic multi-Q drains reject unproven separate bases")
 {
     std::vector<std::string> args;
     args.push_back("--enable-generic-software-pipelining");
     std::string vsm = runEmitWithExtraArgs(genericLoadedMultiQSuffixStoreDrainPipelineSource(), args);
     REQUIRE(vsm.length() > 0);
 
-    CHECK(contains(vsm, "loop_lid__PROLOG:"));
-    CHECK(contains(vsm, "loop_lid__DRAIN:"));
-    CHECK(contains(vsm, "ibeq VI01, VI02, loop_lid__DRAIN"));
-    CHECK(nextInstructionLineContains(vsm,
-                                      "ibeq VI01, VI02, loop_lid__DRAIN",
-                                      "div q, VF00w, VF00w"));
-    CHECK(appearsBeforeAfter(vsm,
-                             "loop_lid:",
-                             "sq.xyz",
-                             "ibne VI01, VI02, loop_lid"));
-    CHECK(blockContains(vsm, "loop_lid__DRAIN", "sq.xyz"));
+	CHECK(!contains(vsm, "loop_lid__PROLOG:"));
+	CHECK(!contains(vsm, "loop_lid__DRAIN:"));
+	CHECK(contains(vsm, "loop_lid:"));
+	CHECK(contains(vsm, "ibne VI01, VI02, loop_lid"));
 }
 
 TEST_CASE("Software pipeline: generic path guards cloned multi-Q store prefixes")

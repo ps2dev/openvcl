@@ -424,3 +424,23 @@ factibilidad desde el mismo DDG preciso, `indexed/xform_loop_lid` baja a
 edge-bound (`IOR`), no MRT-bound. `general/pt_light_vert_loop_lid` alcanza
 exactamente su `preciseRenamedMII=114`. Esta corrección sigue siendo solo
 diagnóstica y los 13 VSM default permanecen bit a bit idénticos al baseline.
+
+## Corrección de aliasing entre bases VI distintas
+
+La investigación posterior de `indexed/xform_loop_lid` encontró una condición
+de corrección previa al trabajo de rendimiento: `plainMemoryAccessesAreDistinct`
+trataba dos registros base VI distintos como prueba suficiente de no-alias. Un
+diferencial mínimo en PCSX2 inicializa `VI01 == VI02 == 16`, escribe `42.0`
+mediante `VI01` y lee mediante `VI02`. Con la regla antigua el scheduler adelanta
+el load y devuelve `1.0` (`3f800000`) frente al baseline `42.0` (`42280000`).
+Tras hacer conservadoras las bases distintas, el diferencial pasa con
+`VU1_DIFFERENTIAL_PASS memory-alias value=42280000`; los diferenciales de
+inducción conocida y postincrement siguen pasando.
+
+La consecuencia estática es grande y deliberada hasta disponer de una prueba
+de provenance: el agregado default del preset pasa de **232531** a **311872**.
+Entre los casos calientes, `indexed` pasa de 29757 a 34457, `general` de 21833
+a 26853 y `general_quad` de 25823 a 36488. Estas son estimaciones estáticas, no
+tiempos medidos. El siguiente trabajo debe recuperar únicamente relaciones de
+dirección demostrables (por ejemplo, raíces comunes más offsets afines), nunca
+restaurar la heurística `different VI => no alias`.

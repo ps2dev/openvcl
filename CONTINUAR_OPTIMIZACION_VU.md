@@ -161,3 +161,14 @@ mismo DDG, `indexed/xform_loop_lid` consigue **II=53** (límite preciso 52) y
 `general/pt_light_vert_loop_lid` consigue exactamente II=114. Los 13 VSM siguen
 idénticos al baseline. No convertir esta mejora diagnóstica en codegen sin una
 prueba diferencial de la ruta de kernel/renombrado que se pretenda promover.
+
+Durante esa auditoría se detectó además un bug de corrección previo: el
+scheduler trataba bases VI distintas como no-alias. El nuevo diferencial
+`test/ps2/vu1_memory_alias_differential` demuestra en PCSX2 que dos VI distintos
+pueden apuntar al mismo QW: antes del fix el candidate devolvía `1.0` y el
+baseline `42.0`; después ambos devuelven `42.0` (`42280000`). La suite host queda
+verde con 447 tests y los diferenciales de inducción conocida/postincrement
+siguen pasando. Esta corrección eleva el agregado estático default de 232531 a
+311872 (`indexed` 29757→34457, `general_quad` 25823→36488). Prioridad siguiente:
+recuperar scheduling mediante provenance/aliasing afín demostrable, no mediante
+nombres de bases distintos ni special-casing de shaders.

@@ -1,7 +1,9 @@
 # VU1 known-induction alias differential harness
 
 This fixture validates suffix-store draining when two same-base stores are
-separated by a known self-induction update.
+separated by a known self-induction update. Its loop intentionally performs no
+unrelated memory loads, so the fixture proves only the same-stream induction
+translation and does not rely on different VI base names being non-aliasing.
 
 The source writes two output qwords per iteration through `vi03`. The first
 store is followed by `iaddiu vi03, vi03, 1`, so a later store written as

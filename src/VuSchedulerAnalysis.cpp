@@ -3600,10 +3600,18 @@ namespace
 		}
 	}
 
-	bool tokenIndicesLoadFromMemoryBase( const std::vector<unsigned int>& tokenIndices,
-	                                     const std::vector<const Token*>& indexedTokens,
-	                                     const std::string& memoryBaseRegister )
+	bool tokenIndicesHaveReadWriteMemoryConflictWithStore(
+	    const VuSoftwarePipelineSuffixStore& store,
+	    const std::vector<unsigned int>& tokenIndices,
+	    const std::vector<const Token*>& indexedTokens )
 	{
+		if( store.tokenIndex >= indexedTokens.size() )
+			return true;
+
+		VuTokenResourceAccess storeAccess;
+		if( !buildVuTokenResourceAccess( *indexedTokens[store.tokenIndex], storeAccess ) )
+			return true;
+
 		for( std::vector<unsigned int>::const_iterator i = tokenIndices.begin();
 		     i != tokenIndices.end(); ++i )
 		{
@@ -3612,9 +3620,22 @@ namespace
 			VuTokenResourceAccess access;
 			if( !buildVuTokenResourceAccess( *indexedTokens[*i], access ) )
 				continue;
-			if( access.memoryKind == VU_MEMORY_LOAD
-			    && access.hasMemoryBase
-			    && access.memoryBaseRegister == memoryBaseRegister )
+			if( access.memoryKind != VU_MEMORY_LOAD )
+				continue;
+
+			// Do not use a different VI base name as a no-alias proof.  The two
+			// registers may hold the same VU-memory address at runtime.  Reuse
+			// the normal movement predicate here so only relationships it can
+			// actually prove (for example, same base plus distinct constant QW
+			// offsets) dismiss the load/store conflict.
+			if( memoryOrderRequiresDependency( storeAccess,
+			                                  access,
+			                                  *indexedTokens[store.tokenIndex],
+			                                  *indexedTokens[*i] )
+			    || memoryOrderRequiresDependency( access,
+			                                     storeAccess,
+			                                     *indexedTokens[*i],
+			                                     *indexedTokens[store.tokenIndex] ) )
 				return true;
 		}
 		return false;
@@ -3626,12 +3647,12 @@ namespace
 	{
 		if( !store.hasMemoryBase )
 			return true;
-		return tokenIndicesLoadFromMemoryBase( opportunity.multiQMainTokenIndices,
-		                                       indexedTokens,
-		                                       store.memoryBaseRegister )
-		    || tokenIndicesLoadFromMemoryBase( opportunity.multiQCyclicPrefixTokenIndices,
-		                                       indexedTokens,
-		                                       store.memoryBaseRegister );
+		return tokenIndicesHaveReadWriteMemoryConflictWithStore( store,
+		                                                           opportunity.multiQMainTokenIndices,
+		                                                           indexedTokens )
+		    || tokenIndicesHaveReadWriteMemoryConflictWithStore( store,
+		                                                       opportunity.multiQCyclicPrefixTokenIndices,
+		                                                       indexedTokens );
 	}
 
 	bool loadedMultiQDrainLeavesPartialStoreStream(

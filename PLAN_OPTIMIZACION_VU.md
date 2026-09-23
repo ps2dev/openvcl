@@ -251,12 +251,14 @@ Elegir las primeras optimizaciones por evidencia, no por el nombre del shader.
    transformados tampoco son simples variantes de este caso: seis tienen
    múltiples salidas tempranas y diez son bucles exteriores con un backedge
    anidado. Requieren soporte de CFG explícito antes de cualquier rewrite.
-   Los drains multi-Q cargados con múltiples stores también pueden emitirse
-   cuando los streams de lectura/escritura están separados: la primera
-   iteración pelada debe materializar el handoff de las rotaciones
-   cyclic-prefix antes de su primer consumidor. `general_quad` valida esta
-   frontera durante 12 frames contra Sony en PCSX2. Los streams load/store con
-   la misma base siguen bloqueados por `read_write_memory_stream_conflict`.
+	   Los drains multi-Q cargados no pueden considerar dos nombres VI distintos
+	   como prueba de streams separados: ambos registros pueden contener la misma
+	   dirección runtime. Un diferencial PCSX2 reproduce el fallo histórico
+	   (`1.0` observado en vez del `42.0` escrito) y obliga ahora a mantener esos
+	   accesos ordenados salvo que exista una prueba independiente de provenance o
+	   relación afín. La validación de `general_quad` sobre 12 frames sigue siendo
+	   útil como oráculo de esos inputs, pero no constituye una prueba genérica de
+	   no-alias para todos los valores runtime.
    Para stores del mismo stream, una inducción self-`iaddiu`/`isubiu` de paso
 	   constante entre accesos puede usarse para traducir ambos offsets al mismo
 	   espacio de direcciones antes del análisis de alias. Este caso dispone de
