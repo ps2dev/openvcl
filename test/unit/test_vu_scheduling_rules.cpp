@@ -342,3 +342,82 @@ TEST_CASE("VuSchedulingRules: zero OR fold preserves branchable instruction boun
     REQUIRE(tokens.size() == 2u);
     CHECK(vcl::lowerVuTokenName(tokens.front()) == "ior");
 }
+
+TEST_CASE("VuSchedulingRules: dead physical VI source is reused for adjacent MFIR temporary")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("iaddiu temp, vi01, 7"));
+    REQUIRE(program.parse("mfir.w vf02, temp"));
+    REQUIRE(program.parse("fcand vi01, 0x3ffff"));
+
+    std::list<vcl::Token> tokens = program.tokenizer.tokens();
+    vcl::reuseDeadVuIntegerSourceForAdjacentMfir(tokens);
+
+    std::list<vcl::Token>::const_iterator add = tokens.begin();
+    const std::list<vcl::Token::Argument>& addArgs = add->arguments();
+    REQUIRE(addArgs.size() == 3u);
+    std::list<vcl::Token::Argument>::const_iterator addDst = addArgs.begin();
+    CHECK(addDst->content() == vcl::Token::Argument::REGISTER);
+    CHECK(addDst->regNumber() == 1);
+
+    ++add;
+    const std::list<vcl::Token::Argument>& mfirArgs = add->arguments();
+    REQUIRE(mfirArgs.size() == 2u);
+    std::list<vcl::Token::Argument>::const_iterator mfirSrc = mfirArgs.begin();
+    ++mfirSrc;
+    CHECK(mfirSrc->content() == vcl::Token::Argument::REGISTER);
+    CHECK(mfirSrc->regNumber() == 1);
+}
+
+TEST_CASE("VuSchedulingRules: dead VI source reuse stops at a later source read")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("iaddiu temp, vi01, 7"));
+    REQUIRE(program.parse("mfir.w vf02, temp"));
+    REQUIRE(program.parse("iadd vi04, vi01, vi03"));
+    REQUIRE(program.parse("fcand vi01, 0x3ffff"));
+
+    std::list<vcl::Token> tokens = program.tokenizer.tokens();
+    vcl::reuseDeadVuIntegerSourceForAdjacentMfir(tokens);
+
+    const std::list<vcl::Token::Argument>& addArgs = tokens.front().arguments();
+    REQUIRE(addArgs.size() == 3u);
+    CHECK(addArgs.begin()->content() == vcl::Token::Argument::ALIAS);
+}
+
+TEST_CASE("VuSchedulingRules: dead VI source reuse does not cross control flow")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("iaddiu temp, vi01, 7"));
+    REQUIRE(program.parse("mfir.w vf02, temp"));
+    REQUIRE(program.parse("ibne vi04, vi05, target_lid"));
+    REQUIRE(program.parse("fcand vi01, 0x3ffff"));
+    REQUIRE(program.parse("target_lid: nop"));
+
+    std::list<vcl::Token> tokens = program.tokenizer.tokens();
+    vcl::reuseDeadVuIntegerSourceForAdjacentMfir(tokens);
+
+    const std::list<vcl::Token::Argument>& addArgs = tokens.front().arguments();
+    REQUIRE(addArgs.size() == 3u);
+    CHECK(addArgs.begin()->content() == vcl::Token::Argument::ALIAS);
+}
+
+TEST_CASE("VuSchedulingRules: dead VI source reuse requires a single temporary consumer")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("iaddiu temp, vi01, 7"));
+    REQUIRE(program.parse("mfir.w vf02, temp"));
+    REQUIRE(program.parse("iadd vi04, temp, vi03"));
+    REQUIRE(program.parse("fcand vi01, 0x3ffff"));
+
+    std::list<vcl::Token> tokens = program.tokenizer.tokens();
+    vcl::reuseDeadVuIntegerSourceForAdjacentMfir(tokens);
+
+    const std::list<vcl::Token::Argument>& addArgs = tokens.front().arguments();
+    REQUIRE(addArgs.size() == 3u);
+    CHECK(addArgs.begin()->content() == vcl::Token::Argument::ALIAS);
+}

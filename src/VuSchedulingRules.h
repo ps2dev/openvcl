@@ -70,6 +70,7 @@ bool vuTokenPairResourcesAreIndependent( const Token& a,
                                          bool bWritesMac );
 
 void foldAdjacentVuIntegerZeroOrAdds( std::list<Token>& tokens );
+void reuseDeadVuIntegerSourceForAdjacentMfir( std::list<Token>& tokens );
 void coalesceAdjacentVuIntegerAdds( std::list<Token>& tokens );
 
 }

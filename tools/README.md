@@ -258,6 +258,24 @@ marker is `VU1_DIFFERENTIAL_PASS integer-zero-or-fold value=0000002a`. This is
 an instruction-level equivalence check; it does not by itself establish a PS2
 performance improvement.
 
+The dead-integer-source-reuse fixture validates the separate pre-allocation
+case where an `IADDIU` temporary is consumed only by an adjacent `MFIR` and the
+old value of its physical VI source is provably overwritten before any later
+read or control-flow boundary:
+
+```sh
+make -C test/ps2/vu1_dead_integer_source_reuse_differential
+python3 test/ps2/vu1_differential/run_pcsx2.py \
+  --elf test/ps2/vu1_dead_integer_source_reuse_differential/vu1_dead_integer_source_reuse_differential.elf
+```
+
+The normal path may then use that physical source VI destructively instead of
+allocating a separate temporary. The baseline sets only
+`OPENVCL_DISABLE_DEAD_INTEGER_SOURCE_REUSE=1`. The expected marker is
+`VU1_DIFFERENTIAL_PASS dead-integer-source-reuse value=0000002a`. The proof is
+deliberately local: a source read, label, directive, or branch before the proven
+overwrite blocks the transformation.
+
 The forward-exit differential fixture checks branch-delay filling when an
 unrelated loop in the same microprogram is already software-pipelined:
 

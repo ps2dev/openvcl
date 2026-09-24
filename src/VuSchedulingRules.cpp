@@ -775,6 +775,120 @@ void foldAdjacentVuIntegerZeroOrAdds( std::list<Token>& tokens )
 	}
 }
 
+void reuseDeadVuIntegerSourceForAdjacentMfir( std::list<Token>& tokens )
+{
+	const unsigned int forbiddenFlags =
+	    Token::PREORDERED | Token::E | Token::D | Token::T | Token::IGNORED
+	    | Token::BRANCH_DELAY_FILLER | Token::KERNEL_BLOCK_BEGIN | Token::KERNEL_BLOCK_END;
+
+	for( std::list<Token>::iterator add = tokens.begin(); add != tokens.end(); ++add )
+	{
+		std::list<Token>::iterator mfir = add;
+		++mfir;
+		if( mfir == tokens.end()
+		    || !add->operand()
+		    || !mfir->operand()
+		    || lowerVuTokenName( *add ) != "iaddiu"
+		    || lowerVuTokenName( *mfir ) != "mfir"
+		    || !add->label().empty()
+		    || !mfir->label().empty()
+		    || (add->flags() & forbiddenFlags)
+		    || (mfir->flags() & forbiddenFlags) )
+			continue;
+
+		std::list<Token::Argument>& addArgs = add->arguments();
+		std::list<Token::Argument>& mfirArgs = mfir->arguments();
+		if( addArgs.size() != 3 || mfirArgs.size() != 2 )
+			continue;
+
+		std::list<Token::Argument>::iterator addDst = addArgs.begin();
+		std::list<Token::Argument>::iterator addSrc = addDst;
+		++addSrc;
+		std::list<Token::Argument>::iterator addImmediate = addSrc;
+		++addImmediate;
+		std::list<Token::Argument>::iterator mfirSrc = mfirArgs.begin();
+		++mfirSrc;
+
+		if( addDst->type() != Token::Argument::INTEGER_REGISTER
+		    || addDst->content() != Token::Argument::ALIAS
+		    || addSrc->type() != Token::Argument::INTEGER_REGISTER
+		    || addSrc->content() != Token::Argument::REGISTER
+		    || addSrc->regNumber() <= 0
+		    || addSrc->regNumber() >= 16
+		    || addImmediate->type() != Token::Argument::IMMEDIATE
+		    || mfirSrc->type() != Token::Argument::INTEGER_REGISTER
+		    || mfirSrc->content() != Token::Argument::ALIAS
+		    || mfirSrc->alias() != addDst->alias() )
+			continue;
+
+		const std::string temporary = addDst->alias();
+		unsigned int temporaryUses = 0;
+		for( std::list<Token>::const_iterator token = tokens.begin(); token != tokens.end(); ++token )
+		{
+			for( std::list<Token::Argument>::const_iterator argument = token->arguments().begin();
+			     argument != token->arguments().end(); ++argument )
+			{
+				if( argument->type() == Token::Argument::INTEGER_REGISTER
+				    && argument->content() == Token::Argument::ALIAS
+				    && argument->alias() == temporary )
+					++temporaryUses;
+			}
+		}
+		if( temporaryUses != 2 )
+			continue;
+
+		const int sourceRegister = addSrc->regNumber();
+		bool sourceDiesBeforeControlFlow = false;
+		std::list<Token>::iterator scan = mfir;
+		++scan;
+		for( ; scan != tokens.end(); ++scan )
+		{
+			if( !scan->label().empty()
+			    || !scan->operand()
+			    || (scan->operand()->flags() & Operand::PREPROCESSOR)
+			    || scan->operand()->unit() == Operand::BRU )
+				break;
+
+			bool readsSource = false;
+			bool writesSource = false;
+			for( std::list<Token::Argument>::const_iterator argument = scan->arguments().begin();
+			     argument != scan->arguments().end(); ++argument )
+			{
+				if( argument->type() != Token::Argument::INTEGER_REGISTER
+				    || argument->content() != Token::Argument::REGISTER
+				    || argument->regNumber() != sourceRegister )
+					continue;
+				if( argument->flags() & Token::Argument::WRITE )
+					writesSource = true;
+				else
+					readsSource = true;
+			}
+
+			if( readsSource )
+				break;
+			if( writesSource )
+			{
+				sourceDiesBeforeControlFlow = true;
+				break;
+			}
+		}
+		if( !sourceDiesBeforeControlFlow )
+			continue;
+
+		const unsigned int addDstFlags = addDst->flags();
+		const unsigned int addDstFields = addDst->fields();
+		const unsigned int mfirSrcFlags = mfirSrc->flags();
+		const unsigned int mfirSrcFields = mfirSrc->fields();
+		const Token::Argument physicalSource = *addSrc;
+		*addDst = physicalSource;
+		addDst->setFlags( addDstFlags );
+		addDst->setFields( addDstFields );
+		*mfirSrc = physicalSource;
+		mfirSrc->setFlags( mfirSrcFlags );
+		mfirSrc->setFields( mfirSrcFields );
+	}
+}
+
 void coalesceAdjacentVuIntegerAdds( std::list<Token>& tokens )
 {
 	for( std::list<Token>::iterator i = tokens.begin(); i != tokens.end(); )

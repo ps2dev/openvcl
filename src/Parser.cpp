@@ -2214,6 +2214,11 @@ bool Parser::tokenize()
 
 bool Parser::allocateRegisters()
 {
+	if( std::getenv("OPENVCL_DISABLE_INTEGER_ZERO_OR_FOLD") == NULL )
+		foldAdjacentVuIntegerZeroOrAdds( m_tokenizer.tokens() );
+	if( std::getenv("OPENVCL_DISABLE_DEAD_INTEGER_SOURCE_REUSE") == NULL )
+		reuseDeadVuIntegerSourceForAdjacentMfir( m_tokenizer.tokens() );
+
 	m_registerAllocator.setAvailableFloats( m_tokenizer.availableFloats() );
 	m_registerAllocator.setAvailableIntegers( m_tokenizer.availableIntegers() );
 	m_registerAllocator.setDynamicThreshold( m_cmdLine.threshold() );

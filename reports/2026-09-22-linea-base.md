@@ -485,7 +485,9 @@ El fixture `vu1_integer_zero_or_fold_differential` compara en PCSX2 el camino
 normal con un baseline que desactiva únicamente este fold mediante
 `OPENVCL_DISABLE_INTEGER_ZERO_OR_FOLD=1`; ambos producen `0000002a` y el run
 termina con `VU1_DIFFERENTIAL_PASS integer-zero-or-fold value=0000002a`. La suite
-host continúa verde. En el diagnóstico de `indexed/xform_loop_lid`, el cuerpo
+host continúa verde. El fold se aplica ahora antes de register allocation para
+que las simplificaciones de temporales también puedan reducir presión de VI. En
+el diagnóstico de `indexed/xform_loop_lid`, el cuerpo
 baja de 65 a 63 operaciones; el `preciseRenamedMII` pasa a 36 por recursos, pero
 el placer todavía necesita II=51. Son estimaciones/diagnósticos estáticos, no
 mediciones de rendimiento. El siguiente trabajo debe caracterizar esas aristas
@@ -522,3 +524,31 @@ estimaciones permanecen iguales: `indexed` sigue en **34457** default y **34458*
 no-pipeline. La invariancia de labels default vuelve a pasar 13/13. Por tanto el
 milestone elimina dependencias físicas artificiales y mejora la capacidad del
 placer, pero todavía no constituye evidencia de mejora runtime.
+
+## Reutilización destructiva de una fuente VI muerta
+
+El diagnóstico ampliado del placer publica ahora, junto al VI físico compartido,
+los aliases fuente que originan cada extremo. En `indexed/xform_loop_lid` esto
+demostró que la arista carried sobre `VI11` era `new_adc78 -> second_index`: dos
+aliases lógicos distintos coasignados al mismo registro físico, no una
+recurrencia semántica del shader. Todos los VI01..VI15 estaban ocupados, por lo
+que una recoloración simple no podía eliminarla.
+
+La solución genérica aprovecha un caso previo a allocation más estrecho. Tras el
+fold OR-cero aparece `iaddiu temporary, viNN, imm` seguido por un único
+`mfir ..., temporary`. Si el temporal solo aparece en esas dos instrucciones y
+el valor antiguo de `viNN` se sobrescribe antes de cualquier lectura, label,
+directiva o branch, el `IADDIU` puede escribir destructivamente `viNN` y el
+`MFIR` leerlo directamente. Esto libera el registro que habría consumido el
+temporal sin cruzar control flow ni asumir nada sobre nombres de shaders.
+
+El fixture `vu1_dead_integer_source_reuse_differential` compara el camino normal
+con `OPENVCL_DISABLE_DEAD_INTEGER_SOURCE_REUSE=1` y pasa en PCSX2 con
+`VU1_DIFFERENTIAL_PASS dead-integer-source-reuse value=0000002a`. También vuelven
+a pasar `integer-zero-or-fold`, `memory-alias`, `affine-alias` y
+`postincrement-prefix`; la suite host queda en **462/462 tests**. En el probe de
+`indexed/xform_loop_lid`, liberar solo el
+primer temporal `new_adc66` es suficiente para que el allocator separe el segundo
+temporal de `second_index`: el II diagnóstico baja de **51 a 47**. El siguiente
+bloqueo visible es el stream real `next_output -> next_output` sobre `VI04`. De
+nuevo, II=47 es un resultado estático del placer, no un tiempo medido en PS2.
