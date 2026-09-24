@@ -597,3 +597,23 @@ idénticas a `vi-liveness-001` (`indexed` sigue en 34257 default y 34258
 no-pipeline). La invariancia default vuelve a pasar 13/13 en
 `build/label-invariance-memory-base-coalesce-002/`. Estas cifras son del modelo
 estático; no son una medición de rendimiento PS2.
+
+## Retry acotado del placer modulo
+
+La recurrencia residual de `indexed/xform_loop_lid` permitió distinguir otro
+problema del placer: aunque todas las aristas y reservas se respetan, el orden
+greedy puede dejar un nodo sin hueco y subir el II aun cuando otro orden sí es
+factible. Se añadió un experimento opt-in que, ante ese fallo, realiza un único
+retry determinista priorizando primero los nodos que quedaron sin colocar. No
+elimina dependencias, no cambia latencias y no relaja el MRT.
+
+Sobre el corpus de los 13 renderers el retry mejora varios probes sin empeorar
+ninguno observado: `indexed/xform_loop_lid` baja de **II=47 a II=46**,
+`general_nospec/pt_light_vert_loop_lid` de **67 a 49**, los
+`xform_loop_lid` de `general_tri`, `general_pv_diff_tri` y
+`general_nospec_tri` de **111 a 104**, y
+`general_pv_diff_quad/xform_loop_lid` de **152 a 150**. Un solo retry conserva
+estas mejoras en los casos comprobados; no es necesario explorar ocho órdenes.
+La suite host continúa verde. Estos II son resultados del modelo/placer y no
+mediciones de rendimiento en PS2. El experimento sigue desactivado por defecto
+hasta integrarlo en una ruta de codegen que disponga de validación diferencial.

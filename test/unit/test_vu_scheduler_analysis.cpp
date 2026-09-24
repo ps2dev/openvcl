@@ -856,6 +856,19 @@ TEST_CASE("VuSchedulerAnalysis: store base updates do not cross visible base rea
     CHECK(vcl::normalizeVuMnemonic(tokens.front().name()) == "sq");
 }
 
+TEST_CASE("VuSchedulerAnalysis: store base updates stay put when adjusted offsets overflow")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("sq.xyz vf01, -1020(vi03)"));
+    REQUIRE(program.parse("iaddiu vi03, vi03, 6"));
+
+    std::list<vcl::Token> tokens = program.tokenizer.tokens();
+    CHECK(!vcl::advanceVuStoreBaseUpdates(tokens));
+    REQUIRE(tokens.size() == 2u);
+    CHECK(vcl::normalizeVuMnemonic(tokens.front().name()) == "sq");
+}
+
 TEST_CASE("VuSchedulerAnalysis: coalesce pointer updates across plain memory accesses")
 {
     vcl::Error::ResetErrorCount();

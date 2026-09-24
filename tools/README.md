@@ -103,6 +103,13 @@ intra-iteration edges. Mixing precise placement constraints with the older
 coarse priority graph can itself create artificial placement failures; keeping
 both views consistent is required before interpreting an II gap.
 
+`OPENVCL_EXPERIMENT_FAILED_FIRST_RETRY=1` enables one bounded deterministic
+retry in the precise multi-Q kernel probe when the greedy placer leaves nodes
+unplaced at a candidate II. The retry places the previously failed nodes first
+while preserving the relative priority of the remaining nodes. It never drops
+dependency edges or MRT constraints and remains diagnostic/experimental rather
+than a production scheduling rule.
+
 Characterize those accepted no-Q rewrites against a completed baseline:
 
 ```sh

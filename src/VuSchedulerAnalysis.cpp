@@ -8197,6 +8197,8 @@ namespace
 				computeLoopPriority( mt, indexedTokens, mii, pr );
 			const unsigned int totalEdges = static_cast<unsigned int>( dFrom.size() );
 			unsigned int edgeViolations = 0;
+			const std::vector<unsigned int> basePriorityOrder = pr.order;
+			bool attemptedFailedFirstRetry = false;
 			// Track 9.G step 1d-1: per-node placement failure reason
 			// counters (edge-bound vs MRT-bound) used by the
 			// OPENVCL_DUMP_LOOP_BUMP_REASONS diagnostic. Reset each
@@ -8517,6 +8519,32 @@ namespace
 				fdivOccFinal  = mrt.fdivOccupancy();
 				efuOccFinal   = mrt.efuOccupancy();
 				if( failedCount == 0 ) break;
+				if( usePreciseRenamedRecMII
+				    && std::getenv( "OPENVCL_EXPERIMENT_FAILED_FIRST_RETRY" ) != NULL
+				    && !attemptedFailedFirstRetry )
+				{
+					std::vector<unsigned int> retryOrder;
+					retryOrder.reserve( pr.order.size() );
+					for( unsigned int rank = 0; rank < pr.order.size(); ++rank )
+						if( !placed[pr.order[rank]] )
+							retryOrder.push_back( pr.order[rank] );
+					for( unsigned int rank = 0; rank < pr.order.size(); ++rank )
+						if( placed[pr.order[rank]] )
+							retryOrder.push_back( pr.order[rank] );
+					if( retryOrder != pr.order )
+					{
+						pr.order.swap( retryOrder );
+						attemptedFailedFirstRetry = true;
+					}
+					if( std::getenv( "OPENVCL_DUMP_LOOP_BUMP_REASONS" ) != NULL )
+						std::cerr << "[loop-failed-first-retry] loop=" << opportunity.label
+						          << " II=" << tryII
+						          << " failed=" << failedCount
+						          << " retry=1"
+						          << "\n";
+					if( attemptedFailedFirstRetry )
+						continue;
+				}
 				if( tryII >= iiCap ) break;
 				// Track 9.G step 1d-1: per-bump diagnostic. Emit one
 				// line per attempt that is about to bump, summarizing
@@ -8674,6 +8702,8 @@ namespace
 					}
 				}
 				++tryII; ++bumps;
+				pr.order = basePriorityOrder;
+				attemptedFailedFirstRetry = false;
 			}
 			// Track 9.G step 5a: structured kernel layout handoff. Populate a
 			// VuKernelLayout from the final placer state. The struct mirrors
@@ -12263,7 +12293,12 @@ bool advanceVuStoreBaseUpdates( std::list<Token>& tokens )
 			long offset = 0;
 			if( storeUsesBaseWithKnownOffset( *i, induction.registerName, offset ) )
 			{
-				(void)offset;
+				const long adjustedOffset = offset - induction.step;
+				if( adjustedOffset < -1024 || adjustedOffset > 1023 )
+				{
+					canMove = false;
+					break;
+				}
 				continue;
 			}
 			if( tokenReadsOrWritesRegisterKey( *i, induction.registerName ) )
