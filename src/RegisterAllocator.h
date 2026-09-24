@@ -24,6 +24,7 @@
 #endif
 
 #include <map>
+#include <set>
 #include <vector>
 #include <sstream>
 
@@ -104,6 +105,8 @@ private:
 	bool loopTargetHasLoopDirective( std::list<Token>::iterator target, std::list<Token>::iterator end ) const;
 	void extendLoopDirectiveRange( std::list<Token>& tokens, unsigned int loopStart, unsigned int loopEnd );
 	void extendMultiQStageRange( std::list<Token>& tokens, unsigned int loopStart, unsigned int loopEnd );
+	void recordMultiQIntegerCoallocationPreferences( std::list<Token>& tokens, unsigned int loopStart, unsigned int loopEnd );
+	unsigned int multiQIntegerCoallocationPenalty( const Alias* alias, const Register* candidate ) const;
 
 	bool updateDynamicTracker( const Token* src );
 
@@ -128,6 +131,7 @@ private:
 	bool m_showRegisterInfo;
 
 	AliasMap m_aliases;
+	std::map<Alias*, std::set<Alias*> > m_multiQIntegerCoallocationPeers;
 };
 
 #include "RegisterAllocator.inl"

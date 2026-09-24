@@ -78,6 +78,7 @@ void RegisterAllocator::setAvailableIntegers( unsigned int integers  )
 bool RegisterAllocator::process( std::list<Token>& tokens )
 {
 	BranchState* branchState = NULL;
+	m_multiQIntegerCoallocationPeers.clear();
 
 	if( !collectLabels( tokens.begin(), tokens.end() ) )
 		return false;
@@ -659,6 +660,8 @@ bool RegisterAllocator::processAliases()
 		}
 
 		unsigned int maxLimit = root->type() == Alias::FLOAT ? 32 : 16;
+		const Register* bestCandidate = NULL;
+		unsigned int bestPenalty = static_cast<unsigned int>( -1 );
 		for( unsigned int j = 0; j < maxLimit; ++j )
 		{
 			const Register* candidate = (root->type() == Alias::FLOAT) ? &m_floats[j] : &m_integers[j];
@@ -692,10 +695,22 @@ bool RegisterAllocator::processAliases()
 
 			if( !conflict )
 			{
+				unsigned int penalty = 0;
 				for( unsigned int m = 0; m < chain.size(); ++m )
-					chain[m]->setAllocatedRegister( candidate );
-				break;
+					penalty += multiQIntegerCoallocationPenalty( chain[m], candidate );
+				if( !bestCandidate || penalty < bestPenalty )
+				{
+					bestCandidate = candidate;
+					bestPenalty = penalty;
+					if( penalty == 0 )
+						break;
+				}
 			}
+		}
+		if( bestCandidate )
+		{
+			for( unsigned int m = 0; m < chain.size(); ++m )
+				chain[m]->setAllocatedRegister( bestCandidate );
 		}
 	}
 
@@ -757,6 +772,8 @@ bool RegisterAllocator::processAliases()
 			}
 		}
 
+		const Register* bestCandidate = NULL;
+		unsigned int bestPenalty = static_cast<unsigned int>( -1 );
 		for( unsigned int j = 0; j < maxLimit; ++j )
 		{
 			const Register* candidate = (dest->type() == Alias::FLOAT) ? &m_floats[j] : &m_integers[j];
@@ -764,6 +781,7 @@ bool RegisterAllocator::processAliases()
 			if( !candidate->available() )
 				continue;
 
+			bool conflict = false;
 			for( AliasMap::iterator k = m_aliases.begin(); k != m_aliases.end(); ++k )
 			{
 				Alias* src = k->first;
@@ -780,16 +798,24 @@ bool RegisterAllocator::processAliases()
 				if( !dest->intersects( src ) )
 					continue;
 
-				candidate = NULL;
+				conflict = true;
 				break;
 			}
 
-			if( candidate )
+			if( !conflict )
 			{
-				dest->setAllocatedRegister( candidate );
-				break;
+				const unsigned int penalty = multiQIntegerCoallocationPenalty( dest, candidate );
+				if( !bestCandidate || penalty < bestPenalty )
+				{
+					bestCandidate = candidate;
+					bestPenalty = penalty;
+					if( penalty == 0 )
+						break;
+				}
 			}
 		}
+		if( bestCandidate )
+			dest->setAllocatedRegister( bestCandidate );
 
 		if( !dest->allocatedRegister() )
 		{
@@ -1181,6 +1207,59 @@ void RegisterAllocator::extendMultiQStageRange( std::list<Token>& tokens, unsign
 
 	collectMultiQStages( tokens, loopStart, loopEnd, stages, qReads, qWrites );
 	if( qWrites > 1 && qReads > 0 )
+	{
+		recordMultiQIntegerCoallocationPreferences( tokens, loopStart, loopEnd );
+
+		/*
+		 * A literal VI used anywhere in a software-pipelined loop is a
+		 * fixed architectural resource, not a short source-level lifetime.
+		 * Sequential allocation may otherwise reuse that physical VI for an
+		 * alias whose lifetime occurs earlier in the same iteration.  Once
+		 * iterations overlap, the next iteration can overwrite the alias
+		 * while the previous iteration still needs the literal VI.
+		 *
+		 * collectLiteralRegisterUsage() has already created preallocated
+		 * aliases for literal VIs.  Extend those aliases across the complete
+		 * multi-Q loop so ordinary alias allocation cannot share the physical
+		 * register with a loop-local value.  This changes allocation only; it
+		 * does not relax any scheduler dependency.
+		 */
+		bool literalViUsed[16] = { false };
+		for( std::list<Token>::iterator token = tokens.begin(); token != tokens.end(); ++token )
+		{
+			if( token->lineNumber() < loopStart || token->lineNumber() > loopEnd )
+				continue;
+			if( !token->operand() || (token->operand()->flags() & Operand::PREPROCESSOR)
+			    || (token->flags() & Token::IGNORED) )
+				continue;
+			for( std::list<Token::Argument>::const_iterator argument = token->arguments().begin();
+			     argument != token->arguments().end(); ++argument )
+			{
+				if( argument->content() != Token::Argument::REGISTER
+				    || argument->type() != Token::Argument::INTEGER_REGISTER )
+					continue;
+				const int reg = argument->regNumber();
+				if( reg > 0 && reg < 16 )
+					literalViUsed[reg] = true;
+			}
+		}
+
+		for( AliasMap::iterator alias = m_aliases.begin(); alias != m_aliases.end(); ++alias )
+		{
+			if( alias->first->type() != Alias::INTEGER || !alias->first->allocatedRegister() )
+				continue;
+			for( unsigned int reg = 1; reg < 16; ++reg )
+			{
+				if( literalViUsed[reg]
+				    && alias->first->allocatedRegister() == &m_integers[reg] )
+				{
+					alias->first->addRange( loopStart, loopEnd );
+					break;
+				}
+			}
+		}
+	}
+	if( qWrites > 1 && qReads > 0 )
 		extendAdjacentMultiQStageAliases( tokens, stages, loopEnd );
 
 	for( std::list<Token>::iterator t = tokens.begin(); t != tokens.end(); ++t )
@@ -1221,6 +1300,59 @@ void RegisterAllocator::extendMultiQStageRange( std::list<Token>& tokens, unsign
 
 	for( std::set<Alias*>::iterator a = qStageAliases.begin(); a != qStageAliases.end(); ++a )
 		(*a)->addRange( loopStart, loopEnd );
+}
+
+void RegisterAllocator::recordMultiQIntegerCoallocationPreferences( std::list<Token>& tokens,
+	                                                                 unsigned int loopStart,
+	                                                                 unsigned int loopEnd )
+{
+	std::set<Alias*> aliases;
+	for( std::list<Token>::iterator token = tokens.begin(); token != tokens.end(); ++token )
+	{
+		if( token->lineNumber() < loopStart || token->lineNumber() > loopEnd )
+			continue;
+		for( std::list<Token::Argument>::const_iterator argument = token->arguments().begin();
+		     argument != token->arguments().end(); ++argument )
+		{
+			if( argument->type() != Token::Argument::INTEGER_REGISTER
+			    || argument->content() != Token::Argument::ALIAS
+			    || !argument->dependency()
+			    || !argument->dependency()->alias() )
+				continue;
+			aliases.insert( argument->dependency()->alias() );
+		}
+	}
+
+	for( std::set<Alias*>::const_iterator a = aliases.begin(); a != aliases.end(); ++a )
+	{
+		for( std::set<Alias*>::const_iterator b = aliases.begin(); b != aliases.end(); ++b )
+		{
+			if( *a == *b )
+				continue;
+			m_multiQIntegerCoallocationPeers[*a].insert( *b );
+		}
+	}
+}
+
+unsigned int RegisterAllocator::multiQIntegerCoallocationPenalty( const Alias* alias,
+	                                                               const Register* candidate ) const
+{
+	if( !alias || alias->type() != Alias::INTEGER || !candidate )
+		return 0;
+
+	std::map<Alias*, std::set<Alias*> >::const_iterator peers =
+	    m_multiQIntegerCoallocationPeers.find( const_cast<Alias*>( alias ) );
+	if( peers == m_multiQIntegerCoallocationPeers.end() )
+		return 0;
+
+	unsigned int penalty = 0;
+	for( std::set<Alias*>::const_iterator peer = peers->second.begin();
+	     peer != peers->second.end(); ++peer )
+	{
+		if( (*peer)->allocatedRegister() == candidate )
+			++penalty;
+	}
+	return penalty;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

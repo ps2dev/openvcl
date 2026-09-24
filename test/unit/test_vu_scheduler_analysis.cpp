@@ -180,6 +180,26 @@ namespace
         return NULL;
     }
 
+    const vcl::Register* allocatedIntegerRegisterForAlias(const std::list<vcl::Token>& tokens,
+                                                          const std::string& alias)
+    {
+        for (std::list<vcl::Token>::const_iterator token = tokens.begin(); token != tokens.end(); ++token)
+        {
+            for (std::list<vcl::Token::Argument>::const_iterator arg = token->arguments().begin();
+                 arg != token->arguments().end(); ++arg)
+            {
+                if (arg->type() != vcl::Token::Argument::INTEGER_REGISTER
+                    || arg->content() != vcl::Token::Argument::ALIAS
+                    || arg->alias() != alias
+                    || !arg->dependency()
+                    || !arg->dependency()->alias())
+                    continue;
+                return arg->dependency()->alias()->allocatedRegister();
+            }
+        }
+        return NULL;
+    }
+
     std::string terminatorName(const vcl::VuBasicBlock& block)
     {
         if (!block.terminator || !block.terminator->operand())
@@ -3046,6 +3066,42 @@ TEST_CASE("RegisterAllocator: multi-Q loop keeps Q stage aliases distinct for sc
     REQUIRE(tex0 != NULL);
     REQUIRE(stage1 != NULL);
     CHECK(tex0 != stage1);
+}
+
+TEST_CASE("RegisterAllocator: multi-Q loop reserves literal VI registers across iterations")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("--enter"));
+    REQUIRE(program.parse("--endenter"));
+    REQUIRE(program.parse("iaddiu ptr, vi00, 0"));
+    REQUIRE(program.parse("iaddiu limit, vi00, 2"));
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("--LoopCS 1, 1"));
+    REQUIRE(program.parse("ilw.w early_value, 0(ptr)"));
+    REQUIRE(program.parse("iaddiu early_use, early_value, 1"));
+    REQUIRE(program.parse("div q, vf00[w], vf00[w]"));
+    REQUIRE(program.parse("mulq.xyz vf02, vf00, q"));
+    REQUIRE(program.parse("div q, vf00[w], vf00[w]"));
+    REQUIRE(program.parse("mulq.xyz vf03, vf00, q"));
+    REQUIRE(program.parse("fcand vi01, 0x3ffff"));
+    REQUIRE(program.parse("ior late_value, vi01, vi00"));
+    REQUIRE(program.parse("iaddiu ptr, ptr, 1"));
+    REQUIRE(program.parse("ibne ptr, limit, loop_lid"));
+    REQUIRE(program.parse("--exit"));
+    REQUIRE(program.parse("--endexit"));
+
+    vcl::RegisterAllocator allocator;
+    allocator.setAvailableFloats(0xffffffffu);
+    allocator.setAvailableIntegers(0xffffu);
+    REQUIRE(allocator.process(program.tokenizer.tokens()));
+
+    const vcl::Register* early = allocatedIntegerRegisterForAlias(program.tokenizer.tokens(), "early_value");
+    const vcl::Register* late = allocatedIntegerRegisterForAlias(program.tokenizer.tokens(), "late_value");
+    REQUIRE(early != NULL);
+    REQUIRE(late != NULL);
+    CHECK(early->name() != "VI01");
+    CHECK(early != late);
 }
 
 TEST_CASE("VuSchedulerAnalysis: dependency graph keeps CLIP WAW unless CLIP is dead")

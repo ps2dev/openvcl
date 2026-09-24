@@ -472,3 +472,35 @@ un milestone de corrección/capacidad: todavía no prueba una mejora de rendimie
 ni desbloquea `indexed/xform_loop_lid`. El siguiente paso es caracterizar las
 raíces VI efectivas de ese loop y extender provenance solo donde pueda
 demostrarse sin asumir que registros distintos son streams distintos.
+
+## Coasignación física de VI en loops multi-Q
+
+El diagnóstico detallado del placer mostró que parte de las recurrencias VI de
+`indexed/xform_loop_lid` no procedían del programa fuente sino de la asignación
+física previa al scheduling. En particular, un alias entero de vida corta podía
+reutilizar un VI literal empleado más tarde en el mismo loop, y dos aliases
+enteros distintos del loop podían acabar en el mismo VI aunque existieran otros
+registros legales. Esa coasignación convierte valores lógicamente independientes
+en dependencias RAW/WAR/WAW artificiales para el DDG modulo.
+
+El allocator trata ahora los VI literales usados por un loop multi-Q como
+recursos arquitectónicos vivos durante todo el loop y, entre registros que ya
+son legales por liveness, prefiere no coasignar aliases enteros pertenecientes al
+mismo loop. La preferencia es blanda: no inventa disponibilidad ni provoca un
+fallo si no existe un registro alternativo. Un test unitario reproduce el caso
+con `VI01` literal y dos aliases enteros y comprueba tanto la reserva del literal
+como la separación de los aliases. La suite queda en **453/453 tests**.
+
+Los diferenciales PCSX2 `memory-alias`, `affine-alias`, `alias-induction`,
+`autoincrement` y `postincrement-prefix` siguen pasando. El probe diagnóstico de
+`indexed/xform_loop_lid` pasa de II=53 a **II=52**; esto es un resultado del
+modelo/placer, no una medición de hardware ni una promoción automática del
+kernel experimental.
+
+`build/baselines/multiq-vi-allocation-001/` completa los 13 renderers y las cuatro
+variantes con `complete=true` y sin fallos. Frente a
+`affine-provenance-001`, solo cambia `indexed_vcl.vsm` en cada variante y las
+estimaciones permanecen iguales: `indexed` sigue en **34457** default y **34458**
+no-pipeline. La invariancia de labels default vuelve a pasar 13/13. Por tanto el
+milestone elimina dependencias físicas artificiales y mejora la capacidad del
+placer, pero todavía no constituye evidencia de mejora runtime.
