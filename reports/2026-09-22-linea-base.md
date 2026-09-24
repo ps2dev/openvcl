@@ -552,3 +552,19 @@ primer temporal `new_adc66` es suficiente para que el allocator separe el segund
 temporal de `second_index`: el II diagnóstico baja de **51 a 47**. El siguiente
 bloqueo visible es el stream real `next_output -> next_output` sobre `VI04`. De
 nuevo, II=47 es un resultado estático del placer, no un tiempo medido en PS2.
+
+La validación de corpus posterior está en `build/baselines/vi-liveness-001/`:
+`metadata.json` marca `complete=true`, sin fallos, y las cuatro variantes de los
+13 renderers compilan y ensamblan. El efecto medido por el modelo estático se
+concentra en `indexed`, cuyo coste ponderado default baja de **34457** a
+**34257**; `general` permanece en **26853** y `general_quad` en **36488**. La
+invariancia de labels default pasa de nuevo **13/13** en
+`build/label-invariance-vi-liveness-002/`.
+
+El oráculo runtime de `general_quad` también permanece estable. Tras un primer
+arranque transitorio de PCSX2 que terminó antes de ejecutar el ELF, una repetición
+del ELF default produjo los 12 hashes esperados, y la ejecución completa limpia
+en `build/runtime/general-quad-vi-liveness-003/` termina con
+`PS2GL_GENERAL_QUAD_PASS frames=12 variants=default,no-noq,no-pipeline,sce`.
+Esto valida equivalencia semántica para ese fixture; no convierte la reducción
+del coste estático de `indexed` en una medición de rendimiento de hardware.
