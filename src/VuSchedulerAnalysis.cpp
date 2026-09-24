@@ -8579,6 +8579,29 @@ namespace
 						{
 							if( dFrom[e] != k && dTo[e] != k ) continue;
 							const unsigned int other = ( dFrom[e] == k ) ? dTo[e] : dFrom[e];
+							std::vector<std::string> sharedResources;
+							if( dFrom[e] < n && dTo[e] < n )
+							{
+								for( unsigned int a = 0; a < nodeWritesP[dFrom[e]].size(); ++a )
+								{
+									const std::string& resource = nodeWritesP[dFrom[e]][a];
+									if( std::find( nodeReadsP[dTo[e]].begin(), nodeReadsP[dTo[e]].end(), resource )
+									       != nodeReadsP[dTo[e]].end()
+									    || std::find( nodeWritesP[dTo[e]].begin(), nodeWritesP[dTo[e]].end(), resource )
+									       != nodeWritesP[dTo[e]].end() )
+										sharedResources.push_back( resource );
+								}
+								for( unsigned int a = 0; a < nodeReadsP[dFrom[e]].size(); ++a )
+								{
+									const std::string& resource = nodeReadsP[dFrom[e]][a];
+									if( std::find( nodeWritesP[dTo[e]].begin(), nodeWritesP[dTo[e]].end(), resource )
+									       == nodeWritesP[dTo[e]].end()
+									    || std::find( sharedResources.begin(), sharedResources.end(), resource )
+									       != sharedResources.end() )
+										continue;
+									sharedResources.push_back( resource );
+								}
+							}
 							const char* otherOp = "?";
 							if( other < n )
 							{
@@ -8596,7 +8619,10 @@ namespace
 							          << " otherOp=" << otherOp
 							          << " lat=" << dLat[e]
 							          << " dist=" << dDist[e]
-							          << "\n";
+							          << " shared=";
+							for( unsigned int shared = 0; shared < sharedResources.size(); ++shared )
+								std::cerr << ( shared == 0 ? "" : "," ) << sharedResources[shared];
+							std::cerr << "\n";
 						}
 					}
 				}

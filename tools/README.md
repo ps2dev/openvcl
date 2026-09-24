@@ -93,7 +93,10 @@ normal rewrite decision or emitted VSM. This remains diagnostic-only: a gap
 between the lower bound and the placed II is not proof that the lower II is
 semantically realizable by the production rewrite. Combine the probe with
 `OPENVCL_DUMP_LOOP_BUMP_REASONS=1` to distinguish dependency-edge failures from
-MRT resource failures.
+MRT resource failures. The bump diagnostic also prints source token indices,
+the failed node's register reads/writes, and the register/resource shared by
+each incident DDG edge. This exposes allocator-induced recurrences without
+changing placement or code generation.
 
 The probe also derives ASAP/ALAP/height ordering from those same precise
 intra-iteration edges. Mixing precise placement constraints with the older
