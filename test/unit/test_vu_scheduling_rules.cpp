@@ -259,3 +259,86 @@ TEST_CASE("VuSchedulingRules: adjacent integer add coalescing is exposed for sch
     ++immediate;
     CHECK(immediate->immediate() == "12");
 }
+
+TEST_CASE("VuSchedulingRules: zero OR feeding an adjacent integer add is folded")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("ior vi03, vi01, vi00"));
+    REQUIRE(program.parse("iaddiu vi03, vi03, 0x7fff"));
+
+    std::list<vcl::Token> tokens = program.tokenizer.tokens();
+    vcl::foldAdjacentVuIntegerZeroOrAdds(tokens);
+
+    REQUIRE(tokens.size() == 1u);
+    CHECK(vcl::lowerVuTokenName(tokens.front()) == "iaddiu");
+    const std::list<vcl::Token::Argument>& args = tokens.front().arguments();
+    REQUIRE(args.size() == 3u);
+    std::list<vcl::Token::Argument>::const_iterator src = args.begin();
+    ++src;
+    CHECK(src->type() == vcl::Token::Argument::INTEGER_REGISTER);
+    CHECK(src->regNumber() == 1);
+    ++src;
+    CHECK(src->immediate() == "0x7fff");
+}
+
+TEST_CASE("VuSchedulingRules: zero OR fold accepts VI00 on either source")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("ior vi03, vi00, vi01"));
+    REQUIRE(program.parse("iaddiu vi03, vi03, 9"));
+
+    std::list<vcl::Token> tokens = program.tokenizer.tokens();
+    vcl::foldAdjacentVuIntegerZeroOrAdds(tokens);
+
+    REQUIRE(tokens.size() == 1u);
+    const std::list<vcl::Token::Argument>& args = tokens.front().arguments();
+    REQUIRE(args.size() == 3u);
+    std::list<vcl::Token::Argument>::const_iterator src = args.begin();
+    ++src;
+    CHECK(src->type() == vcl::Token::Argument::INTEGER_REGISTER);
+    CHECK(src->regNumber() == 1);
+}
+
+TEST_CASE("VuSchedulingRules: zero OR fold keeps non-chain integer adds")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("ior vi03, vi01, vi00"));
+    REQUIRE(program.parse("iaddiu vi03, vi02, 7"));
+
+    std::list<vcl::Token> tokens = program.tokenizer.tokens();
+    vcl::foldAdjacentVuIntegerZeroOrAdds(tokens);
+
+    REQUIRE(tokens.size() == 2u);
+    CHECK(vcl::lowerVuTokenName(tokens.front()) == "ior");
+}
+
+TEST_CASE("VuSchedulingRules: integer OR without VI00 is not folded")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("ior vi03, vi01, vi02"));
+    REQUIRE(program.parse("iaddiu vi03, vi03, 7"));
+
+    std::list<vcl::Token> tokens = program.tokenizer.tokens();
+    vcl::foldAdjacentVuIntegerZeroOrAdds(tokens);
+
+    REQUIRE(tokens.size() == 2u);
+    CHECK(vcl::lowerVuTokenName(tokens.front()) == "ior");
+}
+
+TEST_CASE("VuSchedulingRules: zero OR fold preserves branchable instruction boundaries")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("ior vi03, vi01, vi00"));
+    REQUIRE(program.parse("target_lid: iaddiu vi03, vi03, 7"));
+
+    std::list<vcl::Token> tokens = program.tokenizer.tokens();
+    vcl::foldAdjacentVuIntegerZeroOrAdds(tokens);
+
+    REQUIRE(tokens.size() == 2u);
+    CHECK(vcl::lowerVuTokenName(tokens.front()) == "ior");
+}

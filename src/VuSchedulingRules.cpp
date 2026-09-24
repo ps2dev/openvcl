@@ -673,6 +673,108 @@ bool vuTokenPairResourcesAreIndependent( const Token& a,
 	return true;
 }
 
+void foldAdjacentVuIntegerZeroOrAdds( std::list<Token>& tokens )
+{
+	for( std::list<Token>::iterator i = tokens.begin(); i != tokens.end(); )
+	{
+		std::list<Token>::iterator next = i;
+		++next;
+		if( next == tokens.end() )
+			break;
+
+		if( !i->operand()
+		    || lowerVuTokenName(*i) != "ior"
+		    || !i->label().empty()
+		    || !next->label().empty()
+		    || (i->flags() & (Token::PREORDERED | Token::E | Token::D | Token::T
+		                     | Token::IGNORED | Token::BRANCH_DELAY_FILLER
+		                     | Token::KERNEL_BLOCK_BEGIN | Token::KERNEL_BLOCK_END)) )
+		{
+			++i;
+			continue;
+		}
+
+		const std::list<Token::Argument>& orArgs = i->arguments();
+		if( orArgs.size() != 3 )
+		{
+			++i;
+			continue;
+		}
+
+		std::list<Token::Argument>::const_iterator orDst = orArgs.begin();
+		std::list<Token::Argument>::const_iterator orSrc0 = orDst;
+		++orSrc0;
+		std::list<Token::Argument>::const_iterator orSrc1 = orSrc0;
+		++orSrc1;
+		if( orDst->type() != Token::Argument::INTEGER_REGISTER
+		    || orSrc0->type() != Token::Argument::INTEGER_REGISTER
+		    || orSrc1->type() != Token::Argument::INTEGER_REGISTER )
+		{
+			++i;
+			continue;
+		}
+
+		std::string dstReg;
+		std::string src0Reg;
+		std::string src1Reg;
+		if( !registerKey(*orDst, dstReg)
+		    || !registerKey(*orSrc0, src0Reg)
+		    || !registerKey(*orSrc1, src1Reg) )
+		{
+			++i;
+			continue;
+		}
+
+		const Token::Argument* copySource = NULL;
+		if( src0Reg == "VI00" )
+			copySource = &*orSrc1;
+		else if( src1Reg == "VI00" )
+			copySource = &*orSrc0;
+		else
+		{
+			++i;
+			continue;
+		}
+
+		if( !next->operand()
+		    || lowerVuTokenName(*next) != "iaddiu"
+		    || (next->flags() & (Token::PREORDERED | Token::E | Token::D | Token::T
+		                        | Token::IGNORED | Token::BRANCH_DELAY_FILLER
+		                        | Token::KERNEL_BLOCK_BEGIN | Token::KERNEL_BLOCK_END)) )
+		{
+			++i;
+			continue;
+		}
+
+		std::list<Token::Argument>& addArgs = next->arguments();
+		if( addArgs.size() != 3 )
+		{
+			++i;
+			continue;
+		}
+		std::list<Token::Argument>::iterator addDst = addArgs.begin();
+		std::list<Token::Argument>::iterator addSrc = addArgs.begin();
+		++addSrc;
+		std::list<Token::Argument>::iterator addImmediate = addSrc;
+		++addImmediate;
+		std::string addDstReg;
+		std::string addSrcReg;
+		if( addDst->type() != Token::Argument::INTEGER_REGISTER
+		    || addSrc->type() != Token::Argument::INTEGER_REGISTER
+		    || addImmediate->type() != Token::Argument::IMMEDIATE
+		    || !registerKey(*addDst, addDstReg)
+		    || !registerKey(*addSrc, addSrcReg)
+		    || addDstReg != dstReg
+		    || addSrcReg != dstReg )
+		{
+			++i;
+			continue;
+		}
+		*addSrc = *copySource;
+		tokens.erase(i++);
+	}
+}
+
 void coalesceAdjacentVuIntegerAdds( std::list<Token>& tokens )
 {
 	for( std::list<Token>::iterator i = tokens.begin(); i != tokens.end(); )

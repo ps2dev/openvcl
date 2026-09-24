@@ -473,6 +473,24 @@ ni desbloquea `indexed/xform_loop_lid`. El siguiente paso es caracterizar las
 raíces VI efectivas de ese loop y extender provenance solo donde pueda
 demostrarse sin asumir que registros distintos son streams distintos.
 
+## Fold genérico de OR con cero seguido de IADDIU
+
+La investigación del bloqueo residual de `indexed/xform_loop_lid` encontró una
+secuencia algebraicamente redundante repetida en el cuerpo: `ior dst, src, vi00`
+seguido inmediatamente de `iaddiu dst, dst, imm`. El frontend de codegen puede
+reemplazarla por `iaddiu dst, src, imm` cuando no hay labels ni flags que formen
+una frontera observable. La regla no depende del nombre del loop ni del shader.
+
+El fixture `vu1_integer_zero_or_fold_differential` compara en PCSX2 el camino
+normal con un baseline que desactiva únicamente este fold mediante
+`OPENVCL_DISABLE_INTEGER_ZERO_OR_FOLD=1`; ambos producen `0000002a` y el run
+termina con `VU1_DIFFERENTIAL_PASS integer-zero-or-fold value=0000002a`. La suite
+host continúa verde. En el diagnóstico de `indexed/xform_loop_lid`, el cuerpo
+baja de 65 a 63 operaciones; el `preciseRenamedMII` pasa a 36 por recursos, pero
+el placer todavía necesita II=51. Son estimaciones/diagnósticos estáticos, no
+mediciones de rendimiento. El siguiente trabajo debe caracterizar esas aristas
+residuales antes de relajar dependencias.
+
 ## Coasignación física de VI en loops multi-Q
 
 El diagnóstico detallado del placer mostró que parte de las recurrencias VI de

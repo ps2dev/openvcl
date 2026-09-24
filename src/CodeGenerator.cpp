@@ -992,6 +992,8 @@ bool CodeGenerator::beginProcess(const std::list<Token>& tokens)
 	bool exitWritten = true;
 
 	std::list<Token> workTokens = tokens;
+	if( std::getenv("OPENVCL_DISABLE_INTEGER_ZERO_OR_FOLD") == NULL )
+		foldAdjacentVuIntegerZeroOrAdds(workTokens);
 	coalesceAdjacentVuIntegerAdds(workTokens);
 	bool appliedGenericSoftwarePipeline = false;
 	if( !m_knownLoopOptimizations && m_genericSoftwarePipelining )

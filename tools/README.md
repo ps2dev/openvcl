@@ -242,6 +242,22 @@ exactly one incrementing access, a one-slot invertible branch that reads the sam
 base, no other writes to that register, and no later reads before the branch.
 Predecrement, multiple incrementing accesses, and later base reads remain blocked.
 
+The integer zero-OR fold fixture validates the generic algebraic simplification
+from `ior dst, src, vi00; iaddiu dst, dst, imm` to
+`iaddiu dst, src, imm`:
+
+```sh
+make -C test/ps2/vu1_integer_zero_or_fold_differential
+python3 test/ps2/vu1_differential/run_pcsx2.py \
+  --elf test/ps2/vu1_integer_zero_or_fold_differential/vu1_integer_zero_or_fold_differential.elf
+```
+
+The candidate uses the normal compiler path while the baseline sets the
+diagnostic-only `OPENVCL_DISABLE_INTEGER_ZERO_OR_FOLD=1` switch. The expected
+marker is `VU1_DIFFERENTIAL_PASS integer-zero-or-fold value=0000002a`. This is
+an instruction-level equivalence check; it does not by itself establish a PS2
+performance improvement.
+
 The forward-exit differential fixture checks branch-delay filling when an
 unrelated loop in the same microprogram is already software-pipelined:
 

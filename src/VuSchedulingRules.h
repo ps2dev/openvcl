@@ -69,6 +69,7 @@ bool vuTokenPairResourcesAreIndependent( const Token& a,
                                          bool aWritesMac,
                                          bool bWritesMac );
 
+void foldAdjacentVuIntegerZeroOrAdds( std::list<Token>& tokens );
 void coalesceAdjacentVuIntegerAdds( std::list<Token>& tokens );
 
 }
