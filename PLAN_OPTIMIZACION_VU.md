@@ -288,6 +288,16 @@ Elegir las primeras optimizaciones por evidencia, no por el nombre del shader.
 	   baseline `affine-provenance-001` no cambia ninguno de los 52 VSM frente a
 	   `alias-correctness-003`, así que `indexed/xform_loop_lid` aún requiere una
 	   relación de provenance real adicional antes de recuperar scheduling.
+	   Como afinado local posterior, dos actualizaciones inmediatas de una misma
+	   base VI pueden fusionarse si entre ellas solo existen accesos de memoria
+	   plain con offset constante sobre esa base. El primer delta se traslada a
+	   los offsets y el segundo update acumula ambos pasos. Labels, barreras,
+	   usos visibles no-memory, pre/postincrementos y offsets fuera de rango
+	   bloquean la regla. `vu1_memory_base_update_coalesce_differential` valida la
+	   equivalencia en PCSX2. En `indexed/xform_loop_lid` reduce el cuerpo 63 -> 62
+	   y ResMII 36 -> 35, pero el placer sigue en II=47; por tanto el siguiente
+	   trabajo debe estudiar la recurrencia restante de `next_output`, no asumir
+	   una mejora de hardware por esta simplificación.
 
 **Entrega:** mejoras por categoría de bucle, cada una con casos positivos,
 negativos y diferenciales; fallback seguro cuando la transformación no es legal.

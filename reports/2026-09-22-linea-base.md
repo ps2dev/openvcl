@@ -568,3 +568,32 @@ en `build/runtime/general-quad-vi-liveness-003/` termina con
 `PS2GL_GENERAL_QUAD_PASS frames=12 variants=default,no-noq,no-pipeline,sce`.
 Esto valida equivalencia semántica para ese fixture; no convierte la reducción
 del coste estático de `indexed` en una medición de rendimiento de hardware.
+
+## Coalescing local de actualizaciones de bases VI
+
+El siguiente bloqueo visible de `indexed/xform_loop_lid` era el stream real
+`next_output -> next_output`: dos incrementos `+3` del mismo puntero separados
+únicamente por stores plain que usan ese puntero como base. Se añadió una
+simplificación local general que puede combinar dos self-`IADDIU/ISUBIU` cuando
+todas las observaciones intermedias del registro son loads/stores plain con
+offset conocido. El primer delta se incorpora a esos offsets, el segundo update
+recibe la suma y cualquier label, barrera, uso no-memory, pre/postincremento u
+offset resultante fuera del rango representable bloquea la transformación.
+
+El fixture `test/ps2/vu1_memory_base_update_coalesce_differential` compara en
+PCSX2 el camino normal con `OPENVCL_DISABLE_MEMORY_BASE_UPDATE_COALESCE=1` y
+termina con `VU1_DIFFERENTIAL_PASS memory-base-update-coalesce pointer=38`.
+También siguen pasando `memory-alias`, `affine-alias`, `alias-induction`,
+`postincrement-prefix`, `integer-zero-or-fold` y
+`dead-integer-source-reuse`. La suite host permanece verde.
+
+En el probe de `indexed/xform_loop_lid` el cuerpo baja de 63 a 62 operaciones y
+el `ResMII` preciso baja de 36 a 35, pero el placer continúa en **II=47**: la
+simplificación reduce presión de recursos sin resolver todavía la recurrencia de
+`next_output`. La baseline `build/baselines/memory-base-coalesce-002/` completa
+los 13 renderers y las cuatro variantes (`complete=true`, sin fallos). Solo
+`indexed_vcl.vsm` cambia en cada variante y las estimaciones ponderadas quedan
+idénticas a `vi-liveness-001` (`indexed` sigue en 34257 default y 34258
+no-pipeline). La invariancia default vuelve a pasar 13/13 en
+`build/label-invariance-memory-base-coalesce-002/`. Estas cifras son del modelo
+estático; no son una medición de rendimiento PS2.

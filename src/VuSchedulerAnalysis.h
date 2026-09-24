@@ -563,6 +563,7 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( const std::list<Token>& tokens );
 std::list<Token> applyVuSoftwarePipelinePlans( const std::list<Token>& tokens );
 bool advanceVuStoreBaseUpdates( std::list<Token>& tokens );
+bool coalesceVuIntegerBaseUpdatesAcrossPlainMemory( std::list<Token>& tokens );
 bool vuScheduledProgramHasNoCycleRegression( const VuScheduledProgram& original,
                                              const VuScheduledProgram& candidate );
 std::list<Token> applyVuSoftwarePipelinePlansWithSafeStoreBaseAdvance( const std::list<Token>& tokens );

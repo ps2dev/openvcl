@@ -276,6 +276,24 @@ allocating a separate temporary. The baseline sets only
 deliberately local: a source read, label, directive, or branch before the proven
 overwrite blocks the transformation.
 
+The memory-base-update coalescing fixture validates a separate local pointer
+simplification. Two self `IADDIU`/`ISUBIU` updates to the same VI may be combined
+when every intervening use of that VI is a plain load/store with a constant
+offset. The first update is removed, its delta is folded into those memory
+offsets, and the second update carries the combined delta:
+
+```sh
+make -C test/ps2/vu1_memory_base_update_coalesce_differential
+python3 test/ps2/vu1_differential/run_pcsx2.py \
+  --elf test/ps2/vu1_memory_base_update_coalesce_differential/vu1_memory_base_update_coalesce_differential.elf
+```
+
+The baseline disables only this fold with
+`OPENVCL_DISABLE_MEMORY_BASE_UPDATE_COALESCE=1`. Labels, scheduling boundaries,
+visible non-memory uses, pre/postincrement accesses, or adjusted memory offsets
+outside the encodable range block the transform. The expected marker is
+`VU1_DIFFERENTIAL_PASS memory-base-update-coalesce pointer=38`.
+
 The forward-exit differential fixture checks branch-delay filling when an
 unrelated loop in the same microprogram is already software-pipelined:
 

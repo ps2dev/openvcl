@@ -993,6 +993,8 @@ bool CodeGenerator::beginProcess(const std::list<Token>& tokens)
 
 	std::list<Token> workTokens = tokens;
 	coalesceAdjacentVuIntegerAdds(workTokens);
+	if( std::getenv("OPENVCL_DISABLE_MEMORY_BASE_UPDATE_COALESCE") == NULL )
+		coalesceVuIntegerBaseUpdatesAcrossPlainMemory(workTokens);
 	bool appliedGenericSoftwarePipeline = false;
 	if( !m_knownLoopOptimizations && m_genericSoftwarePipelining )
 	{

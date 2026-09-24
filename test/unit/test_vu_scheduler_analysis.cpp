@@ -856,6 +856,77 @@ TEST_CASE("VuSchedulerAnalysis: store base updates do not cross visible base rea
     CHECK(vcl::normalizeVuMnemonic(tokens.front().name()) == "sq");
 }
 
+TEST_CASE("VuSchedulerAnalysis: coalesce pointer updates across plain memory accesses")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("iaddiu vi03, vi03, 3"));
+    REQUIRE(program.parse("add.xyz vf04, vf05, vf06"));
+    REQUIRE(program.parse("sq.xyz vf01, 0(vi03)"));
+    REQUIRE(program.parse("lq.xyz vf02, 2(vi03)"));
+    REQUIRE(program.parse("iaddiu vi03, vi03, 3"));
+
+    std::list<vcl::Token> tokens = program.tokenizer.tokens();
+    REQUIRE(vcl::coalesceVuIntegerBaseUpdatesAcrossPlainMemory(tokens));
+    REQUIRE(tokens.size() == 4u);
+
+    unsigned int memoryCount = 0;
+    bool sawOffsetThree = false;
+    bool sawOffsetFive = false;
+    bool sawCombinedUpdate = false;
+    for (std::list<vcl::Token>::const_iterator token = tokens.begin(); token != tokens.end(); ++token)
+    {
+        vcl::VuTokenResourceAccess access;
+        REQUIRE(vcl::buildVuTokenResourceAccess(*token, access));
+        if (access.hasMemoryBase && access.memoryBaseRegister == "VI03")
+        {
+            ++memoryCount;
+            sawOffsetThree = sawOffsetThree || access.memoryOffset == 3;
+            sawOffsetFive = sawOffsetFive || access.memoryOffset == 5;
+        }
+        if (vcl::normalizeVuMnemonic(token->name()) == "iaddiu")
+        {
+            REQUIRE(token->arguments().size() == 3u);
+            std::list<vcl::Token::Argument>::const_iterator immediate = token->arguments().begin();
+            std::advance(immediate, 2);
+            sawCombinedUpdate = immediate->immediate() == "6";
+        }
+    }
+    CHECK(memoryCount == 2u);
+    CHECK(sawOffsetThree);
+    CHECK(sawOffsetFive);
+    CHECK(sawCombinedUpdate);
+}
+
+TEST_CASE("VuSchedulerAnalysis: pointer update coalescing rejects visible and postincrement uses")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram visibleRead;
+    REQUIRE(visibleRead.parse("iaddiu vi03, vi03, 3"));
+    REQUIRE(visibleRead.parse("iadd vi05, vi03, vi00"));
+    REQUIRE(visibleRead.parse("sq.xyz vf01, 0(vi03)"));
+    REQUIRE(visibleRead.parse("iaddiu vi03, vi03, 3"));
+    std::list<vcl::Token> visibleTokens = visibleRead.tokenizer.tokens();
+    CHECK(!vcl::coalesceVuIntegerBaseUpdatesAcrossPlainMemory(visibleTokens));
+    CHECK(visibleTokens.size() == 4u);
+
+    ParsedProgram postincrement;
+    REQUIRE(postincrement.parse("iaddiu vi03, vi03, 3"));
+    REQUIRE(postincrement.parse("lqi.xyz vf01, (vi03++)"));
+    REQUIRE(postincrement.parse("iaddiu vi03, vi03, 3"));
+    std::list<vcl::Token> postincrementTokens = postincrement.tokenizer.tokens();
+    CHECK(!vcl::coalesceVuIntegerBaseUpdatesAcrossPlainMemory(postincrementTokens));
+    CHECK(postincrementTokens.size() == 3u);
+
+    ParsedProgram offsetOverflow;
+    REQUIRE(offsetOverflow.parse("iaddiu vi03, vi03, 3"));
+    REQUIRE(offsetOverflow.parse("sq.xyz vf01, 1022(vi03)"));
+    REQUIRE(offsetOverflow.parse("iaddiu vi03, vi03, 3"));
+    std::list<vcl::Token> overflowTokens = offsetOverflow.tokenizer.tokens();
+    CHECK(!vcl::coalesceVuIntegerBaseUpdatesAcrossPlainMemory(overflowTokens));
+    CHECK(overflowTokens.size() == 3u);
+}
+
 TEST_CASE("VuSchedulerAnalysis: software pipeline helper applies safe store-base advance")
 {
     vcl::Error::ResetErrorCount();

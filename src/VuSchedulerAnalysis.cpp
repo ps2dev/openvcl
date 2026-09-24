@@ -12297,6 +12297,127 @@ bool advanceVuStoreBaseUpdates( std::list<Token>& tokens )
 	return changed;
 }
 
+bool coalesceVuIntegerBaseUpdatesAcrossPlainMemory( std::list<Token>& tokens )
+{
+	bool changed = false;
+	bool retry = true;
+	while( retry )
+	{
+		retry = false;
+		for( std::list<Token>::iterator first = tokens.begin(); first != tokens.end(); ++first )
+		{
+			if( tokenHasSchedulingBoundaryForStoreBaseAdvance( *first ) )
+				continue;
+
+			VuLoopInductionUpdate firstUpdate;
+			if( !describeSelfIntegerImmediateUpdate( *first, 0, firstUpdate )
+			    || !firstUpdate.stepKnown || firstUpdate.step == 0 )
+				continue;
+
+			std::list<Token>::iterator second = first;
+			++second;
+			bool sawPlainMemory = false;
+			bool blocked = false;
+			for( ; second != tokens.end(); ++second )
+			{
+				if( tokenHasSchedulingBoundaryForStoreBaseAdvance( *second ) )
+				{
+					blocked = true;
+					break;
+				}
+
+				VuLoopInductionUpdate secondUpdate;
+				if( describeSelfIntegerImmediateUpdate( *second, 0, secondUpdate )
+				    && secondUpdate.registerName == firstUpdate.registerName )
+					break;
+
+				VuTokenResourceAccess access;
+				if( !buildVuTokenResourceAccess( *second, access ) )
+				{
+					blocked = true;
+					break;
+				}
+
+				const bool readsBase = containsKey( access.registerReads, firstUpdate.registerName );
+				const bool writesBase = containsKey( access.registerWrites, firstUpdate.registerName );
+				if( !readsBase && !writesBase )
+					continue;
+
+				const bool plainBaseMemory =
+				    ( access.memoryKind == VU_MEMORY_LOAD || access.memoryKind == VU_MEMORY_STORE )
+				    && access.memoryFlags == VU_MEMORY_FLAG_NONE
+				    && access.hasMemoryBase
+				    && access.hasMemoryOffset
+				    && access.memoryBaseRegister == firstUpdate.registerName
+				    && !writesBase;
+				if( !plainBaseMemory )
+				{
+					blocked = true;
+					break;
+				}
+				sawPlainMemory = true;
+			}
+
+			if( blocked || !sawPlainMemory || second == tokens.end() )
+				continue;
+
+			VuLoopInductionUpdate secondUpdate;
+			if( !describeSelfIntegerImmediateUpdate( *second, 0, secondUpdate )
+			    || !secondUpdate.stepKnown
+			    || secondUpdate.registerName != firstUpdate.registerName )
+				continue;
+
+			const long combinedStep = firstUpdate.step + secondUpdate.step;
+			const long encodedImmediate = secondUpdate.mnemonic == "isubiu"
+			                                ? -combinedStep : combinedStep;
+			if( combinedStep == 0 || encodedImmediate < -32768 || encodedImmediate > 32767 )
+				continue;
+
+			bool offsetsFit = true;
+			for( std::list<Token>::iterator scan = first; ++scan != second; )
+			{
+				VuTokenResourceAccess access;
+				if( !buildVuTokenResourceAccess( *scan, access )
+				    || !access.hasMemoryBase
+				    || access.memoryBaseRegister != firstUpdate.registerName )
+					continue;
+				const long adjustedOffset = access.memoryOffset + firstUpdate.step;
+				if( adjustedOffset < -1024 || adjustedOffset > 1023 )
+				{
+					offsetsFit = false;
+					break;
+				}
+			}
+			if( !offsetsFit )
+				continue;
+
+			for( std::list<Token>::iterator scan = first; ++scan != second; )
+			{
+				VuTokenResourceAccess access;
+				if( buildVuTokenResourceAccess( *scan, access )
+				    && access.hasMemoryBase
+				    && access.memoryBaseRegister == firstUpdate.registerName )
+					setIndirectMemoryOffset( *scan,
+					                         firstUpdate.registerName,
+					                         access.memoryOffset + firstUpdate.step );
+			}
+
+			std::list<Token::Argument>::iterator immediate = second->arguments().begin();
+			std::advance( immediate, 2 );
+			std::stringstream encoded;
+			encoded << encodedImmediate;
+			immediate->setImmediate( encoded.str() );
+
+			tokens.erase( first );
+			changed = true;
+			retry = true;
+			break;
+		}
+	}
+
+	return changed;
+}
+
 bool vuScheduledProgramHasNoCycleRegression( const VuScheduledProgram& original,
                                              const VuScheduledProgram& candidate )
 {
