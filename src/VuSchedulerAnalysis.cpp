@@ -48,6 +48,26 @@ namespace
 		return false;
 	}
 
+	void collectSourceAliasesForPhysicalRegister( const Token& token,
+	                                              const std::string& physicalRegister,
+	                                              std::vector<std::string>& aliases )
+	{
+		aliases.clear();
+		for( std::list<Token::Argument>::const_iterator argument = token.arguments().begin();
+		     argument != token.arguments().end(); ++argument )
+		{
+			if( argument->type() != Token::Argument::INTEGER_REGISTER
+			    || argument->content() != Token::Argument::ALIAS
+			    || !argument->dependency()
+			    || !argument->dependency()->alias()
+			    || !argument->dependency()->alias()->allocatedRegister()
+			    || argument->dependency()->alias()->allocatedRegister()->name() != physicalRegister )
+				continue;
+			if( std::find( aliases.begin(), aliases.end(), argument->alias() ) == aliases.end() )
+				aliases.push_back( argument->alias() );
+		}
+	}
+
 	void addEdge( std::vector<VuDependencyEdge>& edges, unsigned int before, unsigned int after, VuDependencyKind kind )
 	{
 		edges.push_back( VuDependencyEdge( before, after, kind ) );
@@ -8620,9 +8640,36 @@ namespace
 							          << " lat=" << dLat[e]
 							          << " dist=" << dDist[e]
 							          << " shared=";
-							for( unsigned int shared = 0; shared < sharedResources.size(); ++shared )
-								std::cerr << ( shared == 0 ? "" : "," ) << sharedResources[shared];
-							std::cerr << "\n";
+								for( unsigned int shared = 0; shared < sharedResources.size(); ++shared )
+									std::cerr << ( shared == 0 ? "" : "," ) << sharedResources[shared];
+								if( dFrom[e] < n && dTo[e] < n )
+								{
+									std::vector<std::string> fromAliases;
+									std::vector<std::string> toAliases;
+									for( unsigned int shared = 0; shared < sharedResources.size(); ++shared )
+									{
+										if( sharedResources[shared].size() < 2
+										    || sharedResources[shared].substr( 0, 2 ) != "VI" )
+											continue;
+										std::vector<std::string> aliases;
+										collectSourceAliasesForPhysicalRegister(
+										    *indexedTokens[mt[dFrom[e]]], sharedResources[shared], aliases );
+										fromAliases.insert( fromAliases.end(), aliases.begin(), aliases.end() );
+										collectSourceAliasesForPhysicalRegister(
+										    *indexedTokens[mt[dTo[e]]], sharedResources[shared], aliases );
+										toAliases.insert( toAliases.end(), aliases.begin(), aliases.end() );
+									}
+									if( !fromAliases.empty() || !toAliases.empty() )
+									{
+										std::cerr << " sourceAliases=";
+										for( unsigned int alias = 0; alias < fromAliases.size(); ++alias )
+											std::cerr << ( alias == 0 ? "" : "," ) << fromAliases[alias];
+										std::cerr << "->";
+										for( unsigned int alias = 0; alias < toAliases.size(); ++alias )
+											std::cerr << ( alias == 0 ? "" : "," ) << toAliases[alias];
+									}
+								}
+								std::cerr << "\n";
 						}
 					}
 				}
