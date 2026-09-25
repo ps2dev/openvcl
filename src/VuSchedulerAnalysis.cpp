@@ -11772,6 +11772,16 @@ std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( 
 
 bool isVuPlanEligibleForGenericKernelRewrite( const VuSoftwarePipelineRewritePlan& plan )
 {
+	/*
+	 * The modulo layout is currently built from the already-partitioned main
+	 * body.  A normal single-Q software-pipeline plan keeps semantically required
+	 * work (prefetches / Q producer, and sometimes drain work) outside that body.
+	 * Until those operations are part of the kernel layout itself, replacing such
+	 * a plan would silently drop them.  Keep the experimental emitter limited to
+	 * plans whose base pipeline has no separate semantic envelope.
+	 */
+	if( !plan.prologTokenIndices.empty() || !plan.drainTokenIndices.empty() )
+		return false;
 	if( plan.kernelRewriteII == 0u )
 		return false;
 	if( plan.kernelRewriteStageCount < 2u )
@@ -11837,6 +11847,10 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 	std::map<unsigned int, VuSoftwarePipelineRewritePlan> eligibleByLabelIndex;
 	for( std::vector<VuSoftwarePipelineRewritePlan>::const_iterator p = plans.begin(); p != plans.end(); ++p )
 	{
+		const bool completeSemanticEnvelope =
+		    p->prologTokenIndices.empty() && p->drainTokenIndices.empty();
+		if( !completeSemanticEnvelope )
+			continue;
 		const bool baseEligible = isVuPlanEligibleForGenericKernelRewrite( *p );
 		const bool renameEligible = isVuPlanEligibleForKernelRenameEmission( *p, indexedTokens );
 		// 8b-2c-3 relaxation: also accept plans whose ONLY base-eligibility
@@ -11850,6 +11864,8 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 		if( p->labelTokenIndex >= indexedTokens.size() )
 			continue;
 		if( p->branchTokenIndex >= indexedTokens.size() )
+			continue;
+		if( !branchCanInvertToDrain( *indexedTokens[p->branchTokenIndex] ) )
 			continue;
 		eligibleByLabelIndex[p->labelTokenIndex] = *p;
 	}
@@ -11955,17 +11971,17 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 		for( std::vector<unsigned int>::const_iterator p = plan.kernelRewritePrologTokens.begin();
 		     p != plan.kernelRewritePrologTokens.end(); ++p )
 		{
+			if( *p == plan.branchTokenIndex )
+				continue;
 			if( *p < indexedTokens.size() )
 				output.push_back( tokenWithoutLabel( *indexedTokens[*p] ) );
 		}
 
-		// Prolog branch: copy of the original branch, retargeted to EPI1
-		// (skip-main path when the loop induction shows we have only one
-		// iteration left after the prolog).
-		Token proBranch( branchSrc );
-		proBranch.setLabel( "" );
-		retargetBranchTokenTarget( proBranch, epi1Label );
-		output.push_back( proBranch );
+		// After the prolog has consumed the first iteration, skip MAIN only
+		// when the original loop backedge would *not* be taken.  Reusing the
+		// backedge condition directly would do the opposite and terminate a
+		// multi-iteration loop after its first iteration.
+		output.push_back( invertedBranchToDrainToken( branchSrc, epi1Label ) );
 
 		// MAIN_LOOP label.
 		Token mainLabelTok( *i );
@@ -11985,6 +12001,8 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 		for( std::vector<unsigned int>::const_iterator m = plan.kernelRewriteMainTokens.begin();
 		     m != plan.kernelRewriteMainTokens.end(); ++m )
 		{
+			if( *m == plan.branchTokenIndex )
+				continue;
 			if( *m >= indexedTokens.size() )
 				continue;
 			const Token& src = *indexedTokens[*m];
@@ -12059,6 +12077,8 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 		for( std::vector<unsigned int>::const_iterator d = plan.kernelRewriteDrainTokens.begin();
 		     d != plan.kernelRewriteDrainTokens.end(); ++d )
 		{
+			if( *d == plan.branchTokenIndex )
+				continue;
 			if( *d < indexedTokens.size() )
 				output.push_back( tokenWithoutLabel( *indexedTokens[*d] ) );
 		}

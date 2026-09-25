@@ -4167,6 +4167,22 @@ TEST_CASE("VuSchedulerAnalysis: any rename hint disqualifies the plan from gener
     CHECK(!vcl::isVuPlanEligibleForGenericKernelRewrite(plan));
 }
 
+TEST_CASE("VuSchedulerAnalysis: generic kernel rewrite rejects an unrepresented semantic envelope")
+{
+    vcl::VuSoftwarePipelineRewritePlan plan;
+    plan.kernelRewriteII = 4u;
+    plan.kernelRewriteStageCount = 2u;
+    plan.kernelRewriteMainTokens.push_back(3u);
+    REQUIRE(vcl::isVuPlanEligibleForGenericKernelRewrite(plan));
+
+    plan.prologTokenIndices.push_back(1u);
+    CHECK(!vcl::isVuPlanEligibleForGenericKernelRewrite(plan));
+
+    plan.prologTokenIndices.clear();
+    plan.drainTokenIndices.push_back(7u);
+    CHECK(!vcl::isVuPlanEligibleForGenericKernelRewrite(plan));
+}
+
 TEST_CASE("VuSchedulerAnalysis: single-stage layout is not eligible for generic kernel rewrite")
 {
     vcl::VuSoftwarePipelineRewritePlan plan;
@@ -4199,10 +4215,13 @@ TEST_CASE("VuSchedulerAnalysis: generic kernel rewrite emits PRO1/MAIN_LOOP/EPI0
     plan.kernelRewriteII = 2u;
     plan.kernelRewriteStageCount = 2u;
     plan.kernelRewriteConflicts = 0u;
-    plan.kernelRewritePrologTokens.push_back(4u);   // lq
-    plan.kernelRewriteMainTokens.push_back(4u);     // lq
-    plan.kernelRewriteMainTokens.push_back(5u);     // iaddiu
-    plan.kernelRewriteDrainTokens.push_back(5u);    // iaddiu
+	plan.kernelRewritePrologTokens.push_back(4u);   // lq
+	plan.kernelRewritePrologTokens.push_back(6u);   // planner grids may include branch
+	plan.kernelRewriteMainTokens.push_back(4u);     // lq
+	plan.kernelRewriteMainTokens.push_back(5u);     // iaddiu
+	plan.kernelRewriteMainTokens.push_back(6u);     // branch is emitted separately
+	plan.kernelRewriteDrainTokens.push_back(5u);    // iaddiu
+	plan.kernelRewriteDrainTokens.push_back(6u);    // branch must not leak into drain
     REQUIRE(vcl::isVuPlanEligibleForGenericKernelRewrite(plan));
 
     std::vector<vcl::VuSoftwarePipelineRewritePlan> plans;
@@ -4211,17 +4230,19 @@ TEST_CASE("VuSchedulerAnalysis: generic kernel rewrite emits PRO1/MAIN_LOOP/EPI0
     std::list<vcl::Token> output =
         vcl::applyVuGenericKernelRewritePlans(program.tokenizer.tokens(), plans);
 
-    std::vector<std::string> labelsInOrder;
-    std::vector<std::string> branchTargets;
+	std::vector<std::string> labelsInOrder;
+	std::vector<std::string> branchTargets;
+	std::vector<std::string> branchNames;
     for (std::list<vcl::Token>::const_iterator t = output.begin(); t != output.end(); ++t) {
         if (t->label().length() != 0u)
             labelsInOrder.push_back(t->label());
         for (std::list<vcl::Token::Argument>::const_iterator a = t->arguments().begin();
              a != t->arguments().end(); ++a) {
-            if ((a->flags() & vcl::Token::Argument::BRANCH)
-                && a->type() == vcl::Token::Argument::IMMEDIATE) {
-                branchTargets.push_back(a->immediate());
-            }
+			if ((a->flags() & vcl::Token::Argument::BRANCH)
+			    && a->type() == vcl::Token::Argument::IMMEDIATE) {
+				branchTargets.push_back(a->immediate());
+				branchNames.push_back(vcl::normalizeVuMnemonic(t->name()));
+			}
         }
     }
 
@@ -4236,9 +4257,12 @@ TEST_CASE("VuSchedulerAnalysis: generic kernel rewrite emits PRO1/MAIN_LOOP/EPI0
     CHECK(labelsInOrder[5] == "done_lid");
 
     // Two emitted branches: prolog branch -> __EPI1, main branch -> __MAIN_LOOP.
-    REQUIRE(branchTargets.size() == 2u);
-    CHECK(branchTargets[0] == "loop_lid__EPI1");
-    CHECK(branchTargets[1] == "loop_lid__MAIN_LOOP");
+	REQUIRE(branchTargets.size() == 2u);
+	CHECK(branchTargets[0] == "loop_lid__EPI1");
+	CHECK(branchTargets[1] == "loop_lid__MAIN_LOOP");
+	REQUIRE(branchNames.size() == 2u);
+	CHECK(branchNames[0] == "ibeq");
+	CHECK(branchNames[1] == "ibne");
 }
 
 TEST_CASE("VuSchedulerAnalysis: generic kernel rewrite leaves tokens unchanged when no plan is eligible")

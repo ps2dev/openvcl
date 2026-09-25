@@ -192,3 +192,31 @@ pasa 13/13. Por tanto este milestone recupera una capacidad genérica demostrada
 pero todavía no recupera scheduling en `indexed/xform_loop_lid`; el siguiente
 trabajo debe identificar qué relaciones de provenance reales de ese loop quedan
 sin representar.
+
+La auditoría posterior eliminó dos fuentes artificiales adicionales antes de
+interpretar esa brecha. `3c12f37` evita reutilizar VIs literales físicamente a
+través de iteraciones multi-Q solapadas, y `819e59b` fusiona actualizaciones
+locales de una base VI solo cuando todos los usos intermedios son accesos plain
+con offsets ajustables. El antiguo bloqueo `IOR -> ILW` ya no aparece en
+`xform_loop_lid`: el límite preciso/rename-aware actual es **MII=35** y el
+primer bloqueo del placer es la recurrencia real de `next_output`/`VI04` entre
+los `SQ` y su `IADDIU`.
+
+`5179f67` añadió un retry failed-first estrictamente diagnóstico que conserva
+todas las aristas DDG y restricciones MRT. En el corpus actual ese retry coloca
+`xform_loop_lid` en **II=46** desde MII=35, frente al greedy normal que necesita
+un II mayor. Esto demuestra una limitación de orden del placer, no permiso para
+relajar dependencias. La baseline `build/baselines/kernel-rewrite-safety-001`
+completa los 13 renderers y las cuatro variantes sin fallos; `indexed` queda en
+34257/34258/34257/34257 para default/no-pipeline/kernel/expanded.
+
+Antes de usar el layout genérico experimental como codegen se cerraron además
+dos errores de emisión: una rama de backedge copiada al prólogo tenía la
+polaridad equivocada, y los grids del planner podían hacer que la rama original
+se filtrase dentro de prolog/main/drain. El emitter ahora exige una rama
+invertible, emite explícitamente la guarda invertida del prólogo y excluye el
+branch original de los tres grids. También rechaza planes cuyo pipeline base
+tenga un prolog/drain semántico separado que el layout genérico aún no
+represente. La suite host pasa completa. Estas restricciones no promueven una
+relajación de scheduling; mantienen el generic kernel rewrite experimental
+cerrado cuando no puede representar toda la semántica del plan.
