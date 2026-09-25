@@ -36,6 +36,8 @@ def load_problem(path, loop, ii):
             if line.startswith("[modulo-feasibility-problem]"):
                 header = {key: int(value) for key, value in fields.items()
                           if key not in ("loop",)}
+                nodes = {}
+                edges = []
             elif line.startswith("[modulo-feasibility-node]"):
                 node = int(fields["node"])
                 nodes[node] = {key: int(value) for key, value in fields.items()
@@ -204,9 +206,15 @@ def main():
     parser.add_argument("--loop", required=True)
     parser.add_argument("--ii", required=True, type=int)
     parser.add_argument("--max-states", type=int, default=200000)
+    parser.add_argument("--max-stages", type=int, default=0,
+                        help="cap slots to this many pipeline stages (0 = unlimited)")
     args = parser.parse_args()
 
     _, nodes, edges = load_problem(args.dump, args.loop, args.ii)
+    if args.max_stages > 0:
+        max_slot = args.max_stages * args.ii - 1
+        for info in nodes.values():
+            info["hi"] = min(info["hi"], max_slot)
     solver = ModuloCSP(args.ii, nodes, edges, args.max_states)
     status, solution = solver.solve()
     print("MODULO_FEASIBILITY_%s loop=%s II=%d states=%d revisions=%d" %

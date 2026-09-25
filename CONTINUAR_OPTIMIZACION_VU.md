@@ -276,14 +276,17 @@ enforces arc consistency (AC-3), selects the minimum remaining domain, orders
 values by least-constraining pressure, and performs bounded backtracking.
 
 The solver first reproduced a valid II=46 witness, then found **SAT at every II
-from 45 down through the precise renamed MII=35** for `xform_loop_lid`. The
-greedy II=46 result is therefore not a lower bound imposed by the current DDG
-or MRT model. At II=38 the exact witness is three-stage and requires coordinated
-movement across the loop: the greedy partial layout leaves node 60 unplaced,
-while the witness relocates many nodes rather than only the final
-FTOI4/MFIR/SQ/IADDIU neighbourhood. A dynamic MRV-only greedy experiment was
-also tried and discarded; without backtracking it reached dead ends and found
-no layout within the probe cap.
+from 45 down through the precise renamed MII=35** for `xform_loop_lid`. A later
+bounded-stage pass strengthened that result: with every node constrained below
+`2*II`, **all II=35..46 remain SAT**, including II=35 in only 45 search states
+and 2212 AC-3 revisions. The greedy II=46/47 results are therefore not lower
+bounds imposed by the current DDG or MRT model. At II=35 the ordinary greedy
+layout places 61/62 nodes and leaves node 60 (`IADDIU next_output`) unplaced,
+but the exact two-stage witness changes the slots of 39 already-placed nodes.
+This is a global coordinated-placement failure rather than a local
+FTOI4/MFIR/SQ/IADDIU repair opportunity. A dynamic MRV-only greedy experiment
+was also tried and discarded; without backtracking it reached dead ends and
+found no layout within the probe cap.
 
 The checked-in Sony VCL 1.4beta7 reference for the same loop reports
 `optimal=38` for both `ldumb` and `vuta`, and emits a 38-row MAIN loop. That is
@@ -297,13 +300,20 @@ and runtime validation rather than assuming the lowest model-only II is safe.
 
 That solver has now also been ported to C++ as `VuModuloFeasibilitySolver` and
 is available behind `OPENVCL_EXPERIMENT_EXACT_FEASIBILITY_PLACER=1` in the
-precise rename-aware multi-Q probe. On `indexed/xform_loop_lid` it independently
-reproduces the Python result exactly: **II=35, stageCount=3, conflicts=0, 49
-search states, 2304 AC-3 revisions**, with no II bumps. The implementation has
-unit coverage for ordinary DDG ordering, MRT collisions, and carried self
-edges. It remains diagnostic: the production generic rewrite currently builds
-its normal opportunity through the non-precise path, while this lower-II result
-belongs to the separate precise multi-Q probe. The next integration question is
-therefore not whether II<46 exists (it does), but how to promote a precise
-multi-Q layout into the real rewrite plan while preserving the complete
-prolog/drain and rename semantics.
+precise rename-aware multi-Q probe. With
+`OPENVCL_EXACT_FEASIBILITY_MAX_STAGES=2`, `indexed/xform_loop_lid` independently
+reproduces the bounded Python result: **II=35, stageCount=2, conflicts=0, 45
+search states, 2212 AC-3 revisions**, with no II bumps and a 140-token kernel
+image. The integration rebuilds an independent `ModuloReservationTable` from
+the witness and rechecks every DDG inequality before accepting it. The
+implementation has unit coverage for ordinary DDG ordering, MRT collisions,
+and carried self edges. It remains diagnostic: the production generic rewrite
+currently builds its normal opportunity through the non-precise path, while
+this lower-II result belongs to the separate precise multi-Q probe. The next
+integration question is therefore not whether II<46 exists (it does), but how
+to use exact/global placement ideas in the real rewrite while preserving the
+complete prolog/drain and rename semantics. Sony VCL 1.4beta7 remains useful as
+a scheduler-design reference: its checked-in result is 38 rows, while the
+simplified exact OpenVCL model can fit 35, so reverse engineering should focus
+on candidate generation/search and the full emission constraints rather than
+assuming Sony merely drops a dependency that OpenVCL keeps.

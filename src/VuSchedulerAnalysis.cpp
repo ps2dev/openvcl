@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <map>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <string>
@@ -8584,10 +8585,27 @@ namespace
 						exactEdges[edge].latency = dLat[edge];
 					}
 					unsigned int maxStates = 200000u;
+					unsigned int maxStages = 0u;
 					if( const char* value = std::getenv( "OPENVCL_EXACT_FEASIBILITY_MAX_STATES" ) )
 					{
 						const unsigned long parsed = std::strtoul( value, NULL, 10 );
 						if( parsed > 0ul ) maxStates = static_cast<unsigned int>( parsed );
+					}
+					if( const char* value = std::getenv( "OPENVCL_EXACT_FEASIBILITY_MAX_STAGES" ) )
+					{
+						const unsigned long parsed = std::strtoul( value, NULL, 10 );
+						if( parsed > 0ul ) maxStages = static_cast<unsigned int>( parsed );
+					}
+					if( maxStages > 0u )
+					{
+						const unsigned long long maxSlot64 =
+						    static_cast<unsigned long long>( maxStages ) * tryII - 1ull;
+						const unsigned int maxSlot =
+						    maxSlot64 > std::numeric_limits<unsigned int>::max()
+						        ? std::numeric_limits<unsigned int>::max()
+						        : static_cast<unsigned int>( maxSlot64 );
+						for( unsigned int node = 0; node < exactNodes.size(); ++node )
+							if( exactNodes[node].hi > maxSlot ) exactNodes[node].hi = maxSlot;
 					}
 					const VuModuloFeasibilityResult exact =
 					    solveVuModuloFeasibility( tryII, exactNodes, exactEdges, maxStates );
@@ -8603,6 +8621,7 @@ namespace
 					{
 						ModuloReservationTable exactMrt( tryII );
 						bool reservationsValid = true;
+						bool dependenciesValid = true;
 						maxStage = 0;
 						for( unsigned int node = 0; node < n; ++node )
 						{
@@ -8622,7 +8641,17 @@ namespace
 							}
 							if( !reserved ) reservationsValid = false;
 						}
-						if( reservationsValid )
+						for( unsigned int edge = 0; edge < totalEdges && dependenciesValid; ++edge )
+						{
+							const long long actual =
+							    static_cast<long long>( exact.slots[dTo[edge]] )
+							    - static_cast<long long>( exact.slots[dFrom[edge]] );
+							const long long required =
+							    static_cast<long long>( dLat[edge] )
+							    - static_cast<long long>( dDist[edge] ) * tryII;
+							if( actual < required ) dependenciesValid = false;
+						}
+						if( reservationsValid && dependenciesValid )
 						{
 							placedCount = n;
 							failedCount = 0;
@@ -8631,6 +8660,11 @@ namespace
 							fdivOccFinal = exactMrt.fdivOccupancy();
 							efuOccFinal = exactMrt.efuOccupancy();
 						}
+						else
+							std::cerr << "[modulo-exact-validation] loop=" << opportunity.label
+							          << " II=" << tryII
+							          << " mrt=" << ( reservationsValid ? 1 : 0 )
+							          << " ddg=" << ( dependenciesValid ? 1 : 0 ) << "\n";
 					}
 				}
 				if( failedCount == 0 ) break;

@@ -302,6 +302,55 @@ Elegir las primeras optimizaciones por evidencia, no por el nombre del shader.
 **Entrega:** mejoras por categoría de bucle, cada una con casos positivos,
 negativos y diferenciales; fallback seguro cuando la transformación no es legal.
 
+### Fase 3.5 — Viabilidad exacta y comparación con Sony VCL 1.4beta7
+
+Antes de seguir añadiendo heurísticas al placer modular, separar de forma
+concluyente dos causas distintas del déficit: que exista un schedule mejor pero
+el greedy no lo encuentre, o que el propio modelo DDG/latencias/recursos de
+OpenVCL haga imposible ese schedule. Esta fase es diagnóstica; no cambia el
+codegen predeterminado hasta que exista una mejora general validada.
+
+1. Completar y validar el solver exacto de viabilidad modular. Para cada II entre
+   el MII preciso renombrado y el II encontrado por el placer, producir un
+   resultado `SAT`, `UNSAT` o `UNKNOWN` bajo un presupuesto explícito. Los
+   dominios deben ser finitos y reproducibles; limitar también el número máximo
+   de stages cuando sea necesario para evitar que una ventana artificialmente
+   grande convierta la búsqueda en irrelevante.
+2. Cuando el solver devuelva `SAT`, conservar un witness completo de slots y
+   verificarlo de forma independiente contra todas las desigualdades DDG y la
+   `ModuloReservationTable`. Comparar después ese witness nodo a nodo con el
+   layout greedy para identificar la primera decisión que bloquea la solución.
+3. Cuando el solver devuelva `UNSAT`, tratarlo como evidencia contra el modelo
+   actual, no como permiso para eliminar dependencias. Auditar qué aristas,
+   latencias, recursos o restricciones de renombrado explican la diferencia con
+   la referencia externa antes de cambiar ninguna regla.
+4. Usar Sony VCL 1.4beta7 como referencia de investigación. El paquete público
+   contiene builds oficiales x86 y PS2/MIPS y las referencias VSM del corpus ya
+   permiten comparar resultados. Hacer reverse engineering dirigido, no una
+   decompilación indiscriminada: localizar y reconstruir las fases alrededor de
+   `Opt::Loop`, generación de candidatos (`lpgen`), `cap_ii`, reducción modular
+   (`sred`/modular reduction), dependencias/latencias y selección del mejor
+   candidato.
+5. Complementar la inspección estática con experimentos black-box mínimos:
+   variar una sola dependencia, latencia, recurso o forma de loop en pequeños
+   `.vcl` y observar cómo cambia la salida oficial. Usar estos casos para validar
+   la interpretación del binario antes de trasladar ideas al scheduler.
+6. Mantener una frontera clara: extraer comportamiento y algoritmos generales,
+   no copiar código propietario ni introducir casos especiales por shader,
+   etiqueta, hash o renderer. Toda regla nueva debe justificarse con el modelo
+   VU y tener tests positivos/negativos y, cuando afecte a codegen, diferencial
+   runtime.
+
+**Punto de decisión:** si existe `SAT` por debajo del II greedy, mejorar el
+algoritmo de placement usando el witness y la comparación con Sony. Si todos
+los II relevantes son `UNSAT` pero Sony genera un loop mejor, priorizar la
+diferencia de modelo antes de seguir ajustando heurísticas.
+
+**Entrega:** tabla `II -> SAT/UNSAT/UNKNOWN`, witnesses reproducibles para los
+casos SAT, informe de diferencias greedy/exacto y un mapa documentado de las
+rutinas relevantes de Sony VCL 1.4beta7 suficiente para explicar la siguiente
+decisión de diseño de OpenVCL.
+
 ### Fase 4 — Afinado local y asignación de registros
 
 Tras medir lo anterior, mejorar prioridades de camino crítico, emparejamiento,
@@ -390,7 +439,7 @@ repositorio de optimización salvo que aparezca un bloqueo demostrado.
 
 ## 6. Orden y tamaño de los cambios
 
-Orden recomendado: fase 0 → fase 1 → fase 2 → fase 3 → fase 4 → fase 5,
+Orden recomendado: fase 0 → fase 1 → fase 2 → fase 3 → fase 3.5 → fase 4 → fase 5,
 con validación funcional continua desde fase 1. Dividir cada mejora en cambios
 revisables: repro y evidencia, regla general, pruebas y comparación completa.
 Mantener las rutas experimentales separadas hasta validarlas.

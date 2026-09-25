@@ -144,6 +144,8 @@ finite domains and DDG/MRT model. `OPENVCL_EXACT_FEASIBILITY_MAX_STATES`
 overrides the default 200000-state safety cap. Each invocation emits a
 `[modulo-exact-placer]` line with `SAT`, `UNSAT`, or `UNKNOWN` plus state and
 revision counts. This flag does not enable production codegen by itself.
+`OPENVCL_EXACT_FEASIBILITY_MAX_STAGES=N` caps the search to slots below
+`N*II`; the Python tool exposes the same restriction as `--max-stages N`.
 
 Characterize those accepted no-Q rewrites against a completed baseline:
 
