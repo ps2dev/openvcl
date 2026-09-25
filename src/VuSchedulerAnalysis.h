@@ -443,16 +443,25 @@ struct VuLoopPipelineOpportunity
 
 	// Track 9.G-1h step 4b-7a — published refit-grid + node descriptors.
 	// kernelRewriteRefitNodes is the ordered expanded-node sequence the
-	// refit placer was run on. kernelRewriteRefitMainTokens is the
-	// refit placer's main grid (II*4 cells; lane order upper, lower,
-	// fdiv, efu), where each non-NO_INDEX entry is an index into
-	// kernelRewriteRefitNodes. Both vectors are empty when the refit
+	// refit placer was run on. The three token vectors mirror the refit
+	// placer's prolog/main/drain grids, where each non-NO_INDEX entry is
+	// an index into kernelRewriteRefitNodes. Main has II*4 cells; prolog
+	// and drain each have (stageCount-1)*II*4 cells. All vectors are empty
+	// when the refit
 	// path was not eligible, when no node was produced, or when the
 	// refit placer reported conflicts. Codegen consumes these in
-	// 4b-7b/c; dormant in 4b-7a.
+	// 4b-7b/c; currently only MAIN is consumed by codegen.
 	std::vector<VuKernelRefitNode> kernelRewriteRefitNodes;
+	std::vector<unsigned int>      kernelRewriteRefitPrologTokens;
 	std::vector<unsigned int>      kernelRewriteRefitMainTokens;
+	std::vector<unsigned int>      kernelRewriteRefitDrainTokens;
 };
+
+// True when an expanded-DDG refit represents one complete loop iteration in a
+// single stage: no refit prolog/drain is required and the MAIN grid covers every
+// expanded node exactly once. This is a structural prerequisite for a future
+// direct-main promotion path, not a semantic-equivalence proof.
+bool isVuKernelRefitSelfContained( const VuLoopPipelineOpportunity& opportunity );
 
 struct VuSoftwarePipelineRewritePlan
 {
@@ -559,9 +568,12 @@ struct VuSoftwarePipelineRewritePlan
 	// Track 9.G-1h step 4b-7a — mirror of opportunity-side refit-grid
 	// + node descriptors, copied through by
 	// buildVuSoftwarePipelineRewritePlans. See the opportunity field
-	// comment for semantics. Dormant in 4b-7a; consumed by 4b-7b/c.
+	// comment for semantics. MAIN is consumed by 4b-7b/c; PROLOG/DRAIN
+	// remain diagnostic until the full semantic-envelope emitter lands.
 	std::vector<VuKernelRefitNode> kernelRewriteRefitNodes;
+	std::vector<unsigned int>      kernelRewriteRefitPrologTokens;
 	std::vector<unsigned int>      kernelRewriteRefitMainTokens;
+	std::vector<unsigned int>      kernelRewriteRefitDrainTokens;
 };
 
 std::vector<VuBasicBlock> buildVuBasicBlocks( const std::list<Token>& tokens );

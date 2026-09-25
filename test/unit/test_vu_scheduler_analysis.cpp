@@ -4367,6 +4367,9 @@ TEST_CASE("VuSchedulerAnalysis: stageCells scaffolding defaults to empty")
 
     vcl::VuSoftwarePipelineRewritePlan plan;
     CHECK(plan.kernelRewriteStageCells.empty());
+    CHECK(plan.kernelRewriteRefitPrologTokens.empty());
+    CHECK(plan.kernelRewriteRefitMainTokens.empty());
+    CHECK(plan.kernelRewriteRefitDrainTokens.empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -4861,6 +4864,30 @@ TEST_CASE("VuSchedulerAnalysis: exact candidate scoring ranks post-refit results
     vcl::VuKernelCandidateScore lowerSource = fewerNodes;
     lowerSource.sourceII = 36u;
     CHECK(vcl::isVuKernelCandidateScoreBetter(lowerSource, fewerNodes));
+}
+
+TEST_CASE("VuSchedulerAnalysis: single-stage refit envelope must cover every expanded node exactly once")
+{
+    vcl::VuLoopPipelineOpportunity opportunity;
+    opportunity.kernelRewriteRefitII = 2u;
+    opportunity.kernelRewriteRefitStageCount = 1u;
+    opportunity.kernelRewriteRefitConflicts = 0u;
+    opportunity.kernelRewriteRefitNodes.resize(2u);
+    opportunity.kernelRewriteRefitMainTokens.assign(8u, vcl::VuKernelRefitNode::NO_INDEX);
+    opportunity.kernelRewriteRefitMainTokens[0] = 0u;
+    opportunity.kernelRewriteRefitMainTokens[5] = 1u;
+    CHECK(vcl::isVuKernelRefitSelfContained(opportunity));
+
+    opportunity.kernelRewriteRefitMainTokens[5] = 0u;
+    CHECK(!vcl::isVuKernelRefitSelfContained(opportunity));
+    opportunity.kernelRewriteRefitMainTokens[5] = 1u;
+
+    opportunity.kernelRewriteRefitPrologTokens.push_back(0u);
+    CHECK(!vcl::isVuKernelRefitSelfContained(opportunity));
+    opportunity.kernelRewriteRefitPrologTokens.clear();
+
+    opportunity.kernelRewriteRefitStageCount = 2u;
+    CHECK(!vcl::isVuKernelRefitSelfContained(opportunity));
 }
 
 TEST_CASE("VuSchedulerAnalysis 8b-2c-2: unsplittable op not touching any decision base is fine")

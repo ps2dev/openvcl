@@ -376,3 +376,14 @@ production VSM size or static cost. Re-running the sweep on the freshly generate
 revisions and selects **source II=37 -> refit II=38**. The next boundary is full
 prolog/kernel/drain construction and semantic/runtime validation before any
 candidate can be promoted to real codegen.
+
+The next diagnostic step preserves the complete expanded-refit envelope instead
+of publishing only MAIN. `kernelRewriteRefitPrologTokens`, `MainTokens` and
+`DrainTokens` now all use stable expanded-node indices after the shadow placer
+is destroyed. A generic `isVuKernelRefitSelfContained` predicate requires a
+single-stage, conflict-free refit with empty PROLOG/DRAIN and exact one-to-one
+coverage of every expanded node by the MAIN grid. The selected
+`indexed/xform_loop_lid` 37->38 candidate satisfies it: 68 nodes in a 38*4 MAIN
+grid, with zero refit PROLOG/DRAIN cells. This suggests a future direct-MAIN
+experimental emitter can be smaller than the earlier multi-stage envelope path,
+but no codegen route consumes this classification yet.

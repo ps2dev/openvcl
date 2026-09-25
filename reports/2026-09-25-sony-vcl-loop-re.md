@@ -219,3 +219,11 @@ codegen claim: the full host suite passes, a fresh 13-renderer
 kernel/expanded VSM outputs are bit-identical to `kernel-rewrite-safety-001`.
 Re-running the bounded sweep on that fresh baseline's `indexed_pp4.vcl` again
 reports II=35 SAT in 45 states / 2212 AC-3 revisions and selects 37 -> 38.
+
+One additional structural result narrows the next OpenVCL experiment. After
+rename/materialization expansion, the selected 37 -> 38 candidate refits with
+`stageCount=1`: all 68 expanded nodes are covered exactly once by the 38-row MAIN
+grid, while the refit's PROLOG and DRAIN grids are empty. This does not prove
+semantic equivalence, but it means the next promotion experiment need not first
+invent a multi-stage refit envelope for this case; it can test a direct MAIN
+replacement while preserving the original branch/control semantics.

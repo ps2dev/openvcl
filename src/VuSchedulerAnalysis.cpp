@@ -7239,6 +7239,39 @@ bool isVuKernelCandidateScoreBetter( const VuKernelCandidateScore& candidate,
 	return candidate.sourceII < incumbent.sourceII;
 }
 
+bool isVuKernelRefitSelfContained( const VuLoopPipelineOpportunity& opportunity )
+{
+	if( opportunity.kernelRewriteRefitII == 0u )
+		return false;
+	if( opportunity.kernelRewriteRefitStageCount != 1u )
+		return false;
+	if( opportunity.kernelRewriteRefitConflicts != 0u )
+		return false;
+	if( opportunity.kernelRewriteRefitNodes.empty()
+	    || opportunity.kernelRewriteRefitMainTokens.empty() )
+		return false;
+	if( !opportunity.kernelRewriteRefitPrologTokens.empty()
+	    || !opportunity.kernelRewriteRefitDrainTokens.empty() )
+		return false;
+	if( opportunity.kernelRewriteRefitMainTokens.size()
+	    != opportunity.kernelRewriteRefitII * 4u )
+		return false;
+
+	std::vector<bool> seen( opportunity.kernelRewriteRefitNodes.size(), false );
+	unsigned int covered = 0u;
+	for( unsigned int i = 0; i < opportunity.kernelRewriteRefitMainTokens.size(); ++i )
+	{
+		const unsigned int node = opportunity.kernelRewriteRefitMainTokens[i];
+		if( node == VuKernelRefitNode::NO_INDEX )
+			continue;
+		if( node >= opportunity.kernelRewriteRefitNodes.size() || seen[node] )
+			return false;
+		seen[node] = true;
+		++covered;
+	}
+	return covered == opportunity.kernelRewriteRefitNodes.size();
+}
+
 std::vector<VuBasicBlock> buildVuBasicBlocks( const std::list<Token>& tokens )
 {
 	std::vector<VuBasicBlock> blocks;
@@ -9935,10 +9968,46 @@ namespace
 	// 4b-3a / 4b-3b-1) for diagnostic toggling. The shadow opportunity
 	// is a value copy with its kernelRewrite* / kernelEnvelope* fields
 	// cleared and then re-populated by runVuKernelPlacerAndScaffolding;
-	// the caller's opportunity is untouched apart from the four
-	// kernelRewriteRefit* scalar fields. tokens (3rd arg) is forwarded
+	// the caller's opportunity is untouched apart from the published
+	// kernelRewriteRefit* diagnostics. tokens (3rd arg) is forwarded
 	// as-is because the helper does not consume the bare std::list
 	// (audited at extraction time).
+	static bool translateShadowRefitGrid(
+	    const std::vector<unsigned int>& shadowGrid,
+	    const std::map<unsigned int, unsigned int>& shadowIdxToNodeIdx,
+	    std::vector<unsigned int>& outGrid )
+	{
+		outGrid.clear();
+		outGrid.reserve( shadowGrid.size() );
+		for( unsigned int g = 0; g < shadowGrid.size(); ++g )
+		{
+			const unsigned int sIdx = shadowGrid[g];
+			if( sIdx == VuKernelRewritePlan::NO_TOKEN )
+			{
+				outGrid.push_back( VuKernelRefitNode::NO_INDEX );
+				continue;
+			}
+			std::map<unsigned int, unsigned int>::const_iterator mit =
+			    shadowIdxToNodeIdx.find( sIdx );
+			if( mit == shadowIdxToNodeIdx.end() )
+			{
+				outGrid.clear();
+				return false;
+			}
+			outGrid.push_back( mit->second );
+		}
+		return true;
+	}
+
+	static unsigned int countRefitGridNodes( const std::vector<unsigned int>& grid )
+	{
+		unsigned int count = 0;
+		for( unsigned int i = 0; i < grid.size(); ++i )
+			if( grid[i] != VuKernelRefitNode::NO_INDEX )
+				++count;
+		return count;
+	}
+
 	static void runExpandedDDGRefitDiagnostic(
 	    VuLoopPipelineOpportunity& opportunity,
 	    const std::vector<const Token*>& indexedTokens,
@@ -10147,18 +10216,14 @@ namespace
 		opportunity.kernelRewriteRefitMainTokenCount =
 		    static_cast<unsigned int>( shadowMainTokenIndices.size() );
 
-		// Track 9.G-1h step 4b-7a: publish the refit node vector and the
-		// translated refit main grid. The grid mirrors
-		// shadow.kernelRewriteMainTokens cell-for-cell but maps each non-
-		// empty shadowIndexed-idx through shadowIdxToNodeIdx so that each
-		// non-empty cell references an entry in
-		// opportunity.kernelRewriteRefitNodes. Empty cells use
-		// VuKernelRefitNode::NO_INDEX (== -1u). Both vectors are left
-		// empty if the refit placer reported conflicts so downstream
-		// consumers (4b-7b/c) can treat (refitConflicts==0 &&
-		// !refitMainTokens.empty()) as the single eligibility predicate.
+		// Publish the expanded-node descriptors plus translated prolog/main/
+		// drain grids. Every non-empty shadow token is mapped back to the
+		// corresponding expanded-node descriptor, so the complete refit
+		// envelope survives after the local shadow token list is destroyed.
 		opportunity.kernelRewriteRefitNodes.clear();
+		opportunity.kernelRewriteRefitPrologTokens.clear();
 		opportunity.kernelRewriteRefitMainTokens.clear();
+		opportunity.kernelRewriteRefitDrainTokens.clear();
 		if( shadow.kernelRewriteConflicts == 0 && !shadow.kernelRewriteMainTokens.empty() )
 		{
 			opportunity.kernelRewriteRefitNodes.reserve( nodes.size() );
@@ -10185,29 +10250,24 @@ namespace
 				dst.cloneOrdinal     = src.cloneOrdinal;
 				opportunity.kernelRewriteRefitNodes.push_back( dst );
 			}
-			opportunity.kernelRewriteRefitMainTokens.reserve(
-			    shadow.kernelRewriteMainTokens.size() );
-			for( unsigned int g = 0; g < shadow.kernelRewriteMainTokens.size(); ++g )
+			const bool prologOk = translateShadowRefitGrid(
+			    shadow.kernelRewritePrologTokens, shadowIdxToNodeIdx,
+			    opportunity.kernelRewriteRefitPrologTokens );
+			const bool mainOk = translateShadowRefitGrid(
+			    shadow.kernelRewriteMainTokens, shadowIdxToNodeIdx,
+			    opportunity.kernelRewriteRefitMainTokens );
+			const bool drainOk = translateShadowRefitGrid(
+			    shadow.kernelRewriteDrainTokens, shadowIdxToNodeIdx,
+			    opportunity.kernelRewriteRefitDrainTokens );
+			if( !prologOk || !mainOk || !drainOk )
 			{
-				const unsigned int sIdx = shadow.kernelRewriteMainTokens[g];
-				if( sIdx == VuKernelRewritePlan::NO_TOKEN )
-				{
-					opportunity.kernelRewriteRefitMainTokens.push_back(
-					    VuKernelRefitNode::NO_INDEX );
-					continue;
-				}
-				std::map<unsigned int, unsigned int>::const_iterator
-				    mit = shadowIdxToNodeIdx.find( sIdx );
-				if( mit == shadowIdxToNodeIdx.end() )
-				{
-					// Inverse map miss: refit placement references a
-					// shadow token we did not push (should not happen,
-					// but stay conservative and drop the publish).
-					opportunity.kernelRewriteRefitNodes.clear();
-					opportunity.kernelRewriteRefitMainTokens.clear();
-					break;
-				}
-				opportunity.kernelRewriteRefitMainTokens.push_back( mit->second );
+				// A translated envelope must be complete. Any inverse-map miss
+				// means the shadow plan references a token that cannot be rebuilt
+				// after this helper returns, so publish none of it.
+				opportunity.kernelRewriteRefitNodes.clear();
+				opportunity.kernelRewriteRefitPrologTokens.clear();
+				opportunity.kernelRewriteRefitMainTokens.clear();
+				opportunity.kernelRewriteRefitDrainTokens.clear();
 			}
 		}
 
@@ -10798,6 +10858,13 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 			}
 
 			VuKernelCandidateScore bestScore;
+			unsigned int bestRefitPrologCells = 0u;
+			unsigned int bestRefitPrologNodes = 0u;
+			unsigned int bestRefitMainCells = 0u;
+			unsigned int bestRefitMainNodes = 0u;
+			unsigned int bestRefitDrainCells = 0u;
+			unsigned int bestRefitDrainNodes = 0u;
+			bool bestRefitSelfContained = false;
 			unsigned int evaluated = 0u;
 			unsigned int validCandidates = 0u;
 			for( unsigned int offset = 0; offset < sweepWidth; ++offset )
@@ -10875,7 +10942,22 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 				          << "\n";
 
 				if( isVuKernelCandidateScoreBetter( score, bestScore ) )
+				{
 					bestScore = score;
+					bestRefitPrologCells = static_cast<unsigned int>(
+					    candidate.kernelRewriteRefitPrologTokens.size() );
+					bestRefitPrologNodes = countRefitGridNodes(
+					    candidate.kernelRewriteRefitPrologTokens );
+					bestRefitMainCells = static_cast<unsigned int>(
+					    candidate.kernelRewriteRefitMainTokens.size() );
+					bestRefitMainNodes = countRefitGridNodes(
+					    candidate.kernelRewriteRefitMainTokens );
+					bestRefitDrainCells = static_cast<unsigned int>(
+					    candidate.kernelRewriteRefitDrainTokens.size() );
+					bestRefitDrainNodes = countRefitGridNodes(
+					    candidate.kernelRewriteRefitDrainTokens );
+					bestRefitSelfContained = isVuKernelRefitSelfContained( candidate );
+				}
 			}
 
 			std::cerr << "[exact-candidate-sweep] loop=" << opportunity.label
@@ -10893,7 +10975,14 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 				std::cerr << " sourceII=" << bestScore.sourceII
 				          << " refitII=" << bestScore.refitII
 				          << " refitStages=" << bestScore.refitStageCount
-				          << " refitMain=" << bestScore.refitMainTokenCount;
+				          << " refitMain=" << bestScore.refitMainTokenCount
+				          << " refitPrologCells=" << bestRefitPrologCells
+				          << " refitPrologNodes=" << bestRefitPrologNodes
+				          << " refitMainCells=" << bestRefitMainCells
+				          << " refitMainNodes=" << bestRefitMainNodes
+				          << " refitDrainCells=" << bestRefitDrainCells
+				          << " refitDrainNodes=" << bestRefitDrainNodes
+				          << " selfContained=" << ( bestRefitSelfContained ? 1 : 0 );
 			}
 			std::cerr << "\n";
 		}
@@ -11915,7 +12004,9 @@ std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( 
 		// reconstruct the rewritten MAIN body without reaching back
 		// into analysis state.
 		plan.kernelRewriteRefitNodes          = i->kernelRewriteRefitNodes;
+		plan.kernelRewriteRefitPrologTokens   = i->kernelRewriteRefitPrologTokens;
 		plan.kernelRewriteRefitMainTokens     = i->kernelRewriteRefitMainTokens;
+		plan.kernelRewriteRefitDrainTokens    = i->kernelRewriteRefitDrainTokens;
 
 		if( i->canEmitMultiQSoftwarePipeline )
 		{

@@ -178,7 +178,11 @@ a summary with `budgetSkipped=1`; an exhausted solver budget remains `UNKNOWN`
 and never becomes a valid candidate. The experiment emits one
 `[exact-candidate-sweep-candidate]` line per source II and one
 `[exact-candidate-sweep]` summary. It is diagnostic only and does not select a
-production codegen path.
+production codegen path. The summary also reports translated refit PROLOG/MAIN/
+DRAIN grid sizes and node counts plus `selfContained=1` when the selected refit
+has one stage, no PROLOG/DRAIN, no conflicts, and MAIN covers every expanded node
+exactly once. That flag is only a structural promotion prerequisite, not a
+semantic-equivalence result.
 
 Characterize those accepted no-Q rewrites against a completed baseline:
 

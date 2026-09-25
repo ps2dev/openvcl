@@ -356,6 +356,14 @@ codegen predeterminado hasta que exista una mejora general validada.
 	   default/no-pipeline/kernel/expanded son bit a bit idénticos a
 	   `kernel-rewrite-safety-001`, por lo que este milestone no altera todavía
 	   tamaño ni coste del codegen de producción.
+	8. El refit expandido conserva ahora también sus rejillas de PROLOG y DRAIN,
+	   traducidas a los mismos descriptores de nodos reconstruibles que MAIN. Esto
+	   evita perder el envelope al destruir el shadow placer. Una clasificación
+	   estructural adicional sólo acepta como `selfContained` un refit de una etapa,
+	   sin conflictos ni PROLOG/DRAIN, cuya rejilla MAIN cubra cada nodo expandido
+	   exactamente una vez. `indexed/xform_loop_lid` 37->38 cumple esa condición:
+	   68 nodos, MAIN=38*4 celdas, PROLOG=0 y DRAIN=0. Es una condición necesaria
+	   para una futura emisión directa del MAIN, no una prueba semántica.
 
 **Punto de decisión:** si existe `SAT` por debajo del II greedy, mejorar el
 algoritmo de placement usando el witness y la comparación con Sony. Si todos
