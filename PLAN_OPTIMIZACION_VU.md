@@ -340,6 +340,22 @@ codegen predeterminado hasta que exista una mejora general validada.
    etiqueta, hash o renderer. Toda regla nueva debe justificarse con el modelo
    VU y tener tests positivos/negativos y, cuando afecte a codegen, diferencial
    runtime.
+7. El primer selector global acotado queda implementado como experimento
+   diagnóstico. Parte del MII preciso, recorre por defecto cuatro `source II`
+   consecutivos (ventana configurable y limitada), limita por defecto el source
+   II a 64 y el solver a 5000 estados por candidato, exige un witness exacto para
+   cada candidato dentro de un máximo de dos stages, construye sus decisiones de
+   rename, expande materializaciones/retargets y ejecuta el refit del DDG
+   expandido. La selección es determinista y se hace **después** del refit:
+   menor II final, menor número de stages final, menos nodos expandidos y, sólo
+   como último desempate, menor source II. En `indexed/xform_loop_lid` reproduce
+	   35->41, 36->41, 37->38 y 38->40 y selecciona 37->38. El resultado no se
+	   copia todavía a la oportunidad usada por codegen. La validación posterior
+	   recompila la suite host completa y una baseline nueva de los 13 renderers
+	   (`candidate-sweep-001`): no hay fallos y los 52 VSM de
+	   default/no-pipeline/kernel/expanded son bit a bit idénticos a
+	   `kernel-rewrite-safety-001`, por lo que este milestone no altera todavía
+	   tamaño ni coste del codegen de producción.
 
 **Punto de decisión:** si existe `SAT` por debajo del II greedy, mejorar el
 algoritmo de placement usando el witness y la comparación con Sony. Si todos

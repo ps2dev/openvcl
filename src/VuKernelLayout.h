@@ -258,12 +258,12 @@ void buildVuKernelRenameHints( const VuKernelRegisterPlan& regPlan,
 
 // Track 9.G step 8b-1 — per-register rename decisions (scaffolding).
 //
-// For each unique register named in the rename-hint set, choose a
-// scratch VF that does not collide with any base the loop body
-// already touches and that has not yet been chosen for an earlier
-// decision. Scratches are scanned VF31..VF02 (the existing rotation
-// allocator's convention) so the policy matches the rest of the
-// software-pipeliner.
+// Coalesce all hazardous fields of one architectural VF into a single
+// decision, then choose one scratch VF for that masked field set. The
+// scratch must not collide with any base the loop body already touches
+// or with an earlier decision. Scratches are scanned VF31..VF02 (the
+// existing rotation allocator's convention) so the policy matches the
+// rest of the software-pipeliner.
 //
 // usedBases is the set of VF register bases the loop body reads or
 // writes (field-stripped: just "VFnn"). The caller is responsible for
@@ -277,7 +277,7 @@ void buildVuKernelRenameHints( const VuKernelRegisterPlan& regPlan,
 
 struct VuKernelRenameDecision
 {
-    std::string  reg;     // hazardous base register being renamed, e.g. "VF12"
+    std::string  reg;     // hazardous register/field set, e.g. "VF12.xyz"
     std::string  scratch; // chosen free VF base, e.g. "VF31"; empty if !assigned
     bool         assigned;
 

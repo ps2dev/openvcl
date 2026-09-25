@@ -4751,6 +4751,118 @@ TEST_CASE("VuSchedulerAnalysis 8b-2c-2: unsplittable op writing decision base ha
     CHECK(vcl::countKernelRenameEmissionBlockers(plan, idx) == 1u);
 }
 
+TEST_CASE("VuSchedulerAnalysis: plain LQ can retarget a fully renamed destination")
+{
+    ParsedProgram program;
+    REQUIRE(program.parse("lq.xyz vf13, 0(vi05)"));
+    const std::vector<const vcl::Token*> idx = buildIndexedTokens(program.tokenizer.tokens());
+
+    vcl::VuSoftwarePipelineRewritePlan plan =
+        makeScaffoldedPlan(static_cast<unsigned int>(idx.size()), "VF13.xyz", "VF31");
+    CHECK(vcl::isVuPlanEligibleForKernelRenameEmission(plan, idx));
+    CHECK(vcl::countKernelRenameEmissionBlockers(plan, idx) == 0u);
+    CHECK(vcl::countKernelRenameEmissionSoftBlockers(plan, idx) == 0u);
+}
+
+TEST_CASE("VuSchedulerAnalysis: plain LQ remains a blocker when rename fields are incomplete")
+{
+    ParsedProgram program;
+    REQUIRE(program.parse("lq.xyz vf13, 0(vi05)"));
+    const std::vector<const vcl::Token*> idx = buildIndexedTokens(program.tokenizer.tokens());
+
+    vcl::VuSoftwarePipelineRewritePlan plan =
+        makeScaffoldedPlan(static_cast<unsigned int>(idx.size()), "VF13.x", "VF31");
+    CHECK(!vcl::isVuPlanEligibleForKernelRenameEmission(plan, idx));
+    CHECK(vcl::countKernelRenameEmissionBlockers(plan, idx) == 1u);
+}
+
+TEST_CASE("VuSchedulerAnalysis: fully renamed vector destination stays one emitted op")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("add.xyz vf13, vf01, vf02"));
+    REQUIRE(program.parse("iaddiu vi01, vi01, 1"));
+    REQUIRE(program.parse("ibne vi01, vi02, loop_lid"));
+    REQUIRE(program.parse("done_lid:"));
+
+    vcl::VuSoftwarePipelineRewritePlan plan;
+    plan.label = "loop_lid";
+    plan.labelTokenIndex = 0u;
+    plan.branchTokenIndex = 3u;
+    plan.kernelRewriteII = 2u;
+    plan.kernelRewriteStageCount = 2u;
+    plan.kernelRewriteConflicts = 0u;
+    plan.kernelRewriteMainTokens.push_back(1u);
+    plan.kernelRewriteMainTokens.push_back(2u);
+    vcl::VuKernelRenameDecision decision;
+    decision.reg = "VF13.xyz";
+    decision.scratch = "VF31";
+    decision.assigned = true;
+    plan.kernelRewriteRenameDecisions.push_back(decision);
+    vcl::VuKernelRenameMoveSlot moveSlot;
+    moveSlot.decisionIndex = 0u;
+    moveSlot.modSlot = 0u;
+    moveSlot.lane = 0;
+    moveSlot.assigned = true;
+    plan.kernelRewriteRenameMoveSlots.push_back(moveSlot);
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans;
+    plans.push_back(plan);
+    const std::list<vcl::Token> output =
+        vcl::applyVuGenericKernelRewritePlans(program.tokenizer.tokens(), plans);
+
+    unsigned int addCount = 0u;
+    int addDest = -1;
+    unsigned int addFields = 0u;
+    for (std::list<vcl::Token>::const_iterator token = output.begin();
+         token != output.end(); ++token)
+    {
+        if (vcl::normalizeVuMnemonic(token->name()) != "add") continue;
+        ++addCount;
+        addDest = destRegNumber(*token);
+        addFields = token->fields();
+    }
+    CHECK(addCount == 1u);
+    CHECK(addDest == 31);
+    CHECK(addFields == (vcl::Token::X | vcl::Token::Y | vcl::Token::Z));
+}
+
+TEST_CASE("VuSchedulerAnalysis: exact candidate scoring ranks post-refit results deterministically")
+{
+    vcl::VuKernelCandidateScore none;
+    vcl::VuKernelCandidateScore a;
+    a.valid = true;
+    a.sourceII = 35u;
+    a.refitII = 41u;
+    a.refitStageCount = 1u;
+    a.refitMainTokenCount = 71u;
+    CHECK(vcl::isVuKernelCandidateScoreBetter(a, none));
+    CHECK(!vcl::isVuKernelCandidateScoreBetter(none, a));
+
+    vcl::VuKernelCandidateScore lowerFinal = a;
+    lowerFinal.sourceII = 37u;
+    lowerFinal.refitII = 38u;
+    lowerFinal.refitMainTokenCount = 68u;
+    CHECK(vcl::isVuKernelCandidateScoreBetter(lowerFinal, a));
+
+    vcl::VuKernelCandidateScore fewerStages = lowerFinal;
+    fewerStages.sourceII = 38u;
+    lowerFinal.refitStageCount = 2u;
+    fewerStages.refitStageCount = 1u;
+    CHECK(vcl::isVuKernelCandidateScoreBetter(fewerStages, lowerFinal));
+
+    vcl::VuKernelCandidateScore fewerNodes = fewerStages;
+    fewerNodes.sourceII = 39u;
+    fewerStages.refitMainTokenCount = 70u;
+    fewerNodes.refitMainTokenCount = 69u;
+    CHECK(vcl::isVuKernelCandidateScoreBetter(fewerNodes, fewerStages));
+
+    vcl::VuKernelCandidateScore lowerSource = fewerNodes;
+    lowerSource.sourceII = 36u;
+    CHECK(vcl::isVuKernelCandidateScoreBetter(lowerSource, fewerNodes));
+}
+
 TEST_CASE("VuSchedulerAnalysis 8b-2c-2: unsplittable op not touching any decision base is fine")
 {
     ParsedProgram program;

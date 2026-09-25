@@ -332,3 +332,47 @@ detailed address/evidence map is in
 `reports/2026-09-25-sony-vcl-loop-re.md`. The next investigation should identify
 which full-pipeline phase first separates 35--37 from 38, then use that result
 to define the constraints and search policy of a generic global OpenVCL placer.
+
+The first full-expansion comparison has now resolved that question more
+concretely. Rename decisions coalesce hazardous fields of one VF into a single
+scratch, and a vector op whose complete destination mask belongs to that one
+decision can keep its original vector form with only the destination retargeted
+instead of being split into per-field clones. This is semantics-preserving for
+the existing splittable allowlist and plain `LQ`, and is covered by unit tests.
+It reduces the expanded-DDG pressure dramatically. With exact source witnesses
+forced at II=35,36,37,38, the resulting refit IIs are respectively
+**41, 41, 38, 40**. The II=37 witness expands to 68 nodes (53 passthrough, 4
+split clones, 8 whole-destination retargets, 3 materialization MOVEs) and the
+refit succeeds at **II=38**, exactly matching the Sony MAIN row count. Its
+expanded resource occupancy is upper=30, lower=36, FDIV=14; the expanded MII is
+38. This demonstrates that the best source schedule is not the first SAT one:
+II=35 creates more rename/repair pressure and becomes 41 after expansion.
+
+The new `vector-retarget-001` 13-renderer baseline is complete with no failures,
+and all 52 VSM outputs for default/no-pipeline/kernel/expanded are bit-identical
+to `kernel-rewrite-safety-001`. The next scheduler milestone is therefore a
+generic bounded **candidate sweep**: evaluate several exact source IIs through
+rename + expanded-DDG refit and select by the final refit result, rather than
+stopping at the first model-only SAT witness. Promotion to codegen still
+requires complete prolog/drain semantics and PCSX2 differential validation.
+
+That bounded sweep is now implemented behind
+`OPENVCL_EXPERIMENT_EXACT_CANDIDATE_SWEEP=1`. It starts at the precise renamed
+MII, examines four source IIs by default (hard-capped at 16), skips by default
+loops whose source MII exceeds 64, limits the exact search to 5000 states per
+candidate, requires an exact source witness under a two-stage default cap, and
+runs each feasible candidate through rename + expanded-DDG refit. Candidate ranking is generic and
+deterministic: final refit II, final refit stage count, expanded/refit node count,
+then source II. On `indexed/xform_loop_lid` the automatic sweep reproduces
+35->41, 36->41, 37->38 and 38->40 and selects **37->38**. The sweep remains
+diagnostic and does not alter production/default codegen.
+
+The completed milestone validation rebuilds the current host tree and passes the
+full unit suite. A fresh `build/baselines/candidate-sweep-001` run completes all
+13 renderers in all four variants with no failures; its 52 VSM outputs are
+bit-identical to `kernel-rewrite-safety-001`, so the diagnostic sweep changes no
+production VSM size or static cost. Re-running the sweep on the freshly generated
+`indexed_pp4.vcl` independently reproduces II=35 SAT in 45 states / 2212 AC-3
+revisions and selects **source II=37 -> refit II=38**. The next boundary is full
+prolog/kernel/drain construction and semantic/runtime validation before any
+candidate can be promoted to real codegen.

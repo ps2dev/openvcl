@@ -147,10 +147,46 @@ The exact solver and Sony control flow point in the same direction:
   for the raw DDG/MRT solver. OpenVCL can use the II=35 witness diagnostically,
   but should compare 35, 36, 37 and 38 after complete rewrite construction.
 
+That comparison now has a concrete result. After coalescing hazardous fields of
+one architectural VF into one scratch decision and preserving a vector op as a
+single instruction whenever its complete destination mask is covered by that
+decision, the expanded-DDG refit produces:
+
+| Exact source candidate | Expanded nodes | Expanded MII / achieved II |
+| ---: | ---: | ---: |
+| 35 | 71 | 41 / 41 |
+| 36 | 71 | 41 / 41 |
+| 37 | 68 | **38 / 38** |
+| 38 | 70 | 40 / 40 |
+
+The II=37 witness is therefore currently the best full-expansion candidate and
+refits to exactly the **38 rows emitted by Sony**. Its expanded body contains 53
+passthrough nodes, 4 remaining split clones, 8 whole-destination retargets and 3
+materialization MOVEs. The resource occupancy of the resulting 38-row refit is
+30 upper and 36 lower slots (FDIV occupancy 14), so its lower-pipe/resource
+pressure explains the final MII=38 more directly than a recurrence does.
+
+This also sharpens the interpretation of Sony's outer candidate loop: choosing
+the numerically smallest pre-rename schedule is not necessarily optimal after
+register-version repair. OpenVCL's exact II=35 witness creates more rename
+hazards and materialization pressure and expands to II=41, while the II=37
+witness needs fewer decisions and survives the complete shadow refit at 38.
+OpenVCL now encodes that policy as a diagnostic bounded sweep: source candidates
+must have an independently validated exact witness, then pass through rename and
+expanded-DDG refit before ranking. The generic deterministic score compares
+final refit II first, then final stage count, expanded node count and finally
+source II. With the default four-candidate/two-stage bounds, the automatic sweep
+selects **37 -> 38** without inspecting shader names, labels, hashes or renderer
+identity. A generic source-II ceiling and per-candidate solver-state budget keep
+the diagnostic bounded on much larger search spaces; skipped/`UNKNOWN` cases are
+not treated as evidence of infeasibility. It remains deliberately disconnected
+from production codegen.
+
 ## Next reverse-engineering questions
 
-1. Determine which post-placement phase first rejects candidate sizes 35, 36
-   and 37 for the indexed transform loop (or an equivalent minimal repro).
+1. Determine whether Sony's pre-finalization candidate corresponding to its
+   38-row loop similarly starts below 38 and expands/repairs upward, or whether
+   its internal `+0x38` field already denotes the post-repair size.
 2. Confirm the exact semantics of candidate field `+0x3c`.
 3. Reconstruct the strategy selector and the differences between the `ldumb`,
    `vuta`, `hDown`, `normal*` and related paths.
@@ -167,9 +203,19 @@ The exact solver and Sony control flow point in the same direction:
 ## Current conclusion
 
 OpenVCL's current II=46/47 placement result is demonstrably heuristic: its own
-DDG/MRT model admits a two-stage II=35 schedule. Sony VCL's loop optimizer also
-appears substantially more global than OpenVCL's current placer and evaluates
-candidate loop sizes through a larger validation/finalization pipeline. The
-most productive next step is therefore to identify the first full-pipeline
-constraint that separates Sony's accepted size 38 from OpenVCL's model-only
-35, then incorporate that distinction into a bounded global OpenVCL scheduler.
+DDG/MRT model admits a two-stage II=35 schedule. More importantly, evaluating
+several exact witnesses through the current rename + expanded-DDG model now
+finds a **37 -> 38** candidate that matches Sony's steady-state row count. The
+bounded global candidate search now performs that post-rename/refit selection
+automatically in diagnostic mode. The next boundary is no longer source-candidate
+selection itself but full prolog/kernel/drain emission and runtime validation
+before any production promotion. Reverse engineering remains useful for
+validating Sony's stopping criteria and later validation phases, not as a
+prerequisite for every scheduler change.
+
+The completed OpenVCL validation keeps this conclusion diagnostic rather than a
+codegen claim: the full host suite passes, a fresh 13-renderer
+`candidate-sweep-001` baseline has no failures, and all 52 default/no-pipeline/
+kernel/expanded VSM outputs are bit-identical to `kernel-rewrite-safety-001`.
+Re-running the bounded sweep on that fresh baseline's `indexed_pp4.vcl` again
+reports II=35 SAT in 45 states / 2212 AC-3 revisions and selects 37 -> 38.

@@ -308,6 +308,36 @@ namespace
         if( dot == std::string::npos ) return key;
         return key.substr( 0, dot );
     }
+
+    unsigned int fieldMaskOfRegKey( const std::string& key )
+    {
+        const std::string::size_type dot = key.find( '.' );
+        if( dot == std::string::npos ) return 0x0fu;
+        unsigned int mask = 0;
+        const std::string fields = key.substr( dot + 1 );
+        if( fields.find( 'x' ) != std::string::npos ) mask |= 0x01u;
+        if( fields.find( 'y' ) != std::string::npos ) mask |= 0x02u;
+        if( fields.find( 'z' ) != std::string::npos ) mask |= 0x04u;
+        if( fields.find( 'w' ) != std::string::npos ) mask |= 0x08u;
+        return mask ? mask : 0x0fu;
+    }
+
+    std::string regKeyWithFieldMask( const std::string& base, unsigned int mask )
+    {
+        if( ( mask & 0x0fu ) == 0x0fu ) return base;
+        std::string key = base + ".";
+        if( mask & 0x01u ) key += 'x';
+        if( mask & 0x02u ) key += 'y';
+        if( mask & 0x04u ) key += 'z';
+        if( mask & 0x08u ) key += 'w';
+        return key;
+    }
+
+    bool regKeysOverlap( const std::string& first, const std::string& second )
+    {
+        return baseOfRegKey( first ) == baseOfRegKey( second )
+            && ( fieldMaskOfRegKey( first ) & fieldMaskOfRegKey( second ) ) != 0u;
+    }
 }
 
 void buildVuKernelRenameDecisions( const std::vector< VuKernelRenameHint >& hints,
@@ -316,15 +346,26 @@ void buildVuKernelRenameDecisions( const std::vector< VuKernelRenameHint >& hint
 {
     decisions.clear();
 
-    // Unique regs from hints, in first-seen order.
+    // One decision per architectural VF base, with all hazardous fields
+    // coalesced into its field mask. A single scratch VF can carry multiple
+    // independent components of the same original VF and later be restored
+    // with one masked MOVE.
     std::vector< std::string > uniqueRegs;
     for( unsigned int h = 0; h < hints.size(); ++h )
     {
         const std::string& r = hints[ h ].reg;
+        const std::string base = baseOfRegKey( r );
+        const unsigned int mask = fieldMaskOfRegKey( r );
         bool present = false;
         for( unsigned int u = 0; u < uniqueRegs.size(); ++u )
-            if( uniqueRegs[ u ] == r ) { present = true; break; }
-        if( !present ) uniqueRegs.push_back( r );
+        {
+            if( baseOfRegKey( uniqueRegs[ u ] ) != base ) continue;
+            const unsigned int combined = fieldMaskOfRegKey( uniqueRegs[ u ] ) | mask;
+            uniqueRegs[ u ] = regKeyWithFieldMask( base, combined );
+            present = true;
+            break;
+        }
+        if( !present ) uniqueRegs.push_back( regKeyWithFieldMask( base, mask ) );
     }
 
     // Reserved set: every base the loop body touches plus every scratch
@@ -338,6 +379,7 @@ void buildVuKernelRenameDecisions( const std::vector< VuKernelRenameHint >& hint
         VuKernelRenameDecision d;
         d.reg = uniqueRegs[ u ];
         d.assigned = false;
+
         // Scan VF31..VF02; VF00 and VF01 are reserved by VU convention.
         for( unsigned int reverse = 32; reverse > 2; --reverse )
         {
@@ -391,7 +433,7 @@ void buildVuKernelRenameMoveSlots(
             bool reads = false;
             for( unsigned int k = 0; k < er.reads.size(); ++k )
             {
-                if( baseOfRegKey( er.reads[ k ] ) == decisions[ d ].reg )
+                if( regKeysOverlap( er.reads[ k ], decisions[ d ].reg ) )
                 { reads = true; break; }
             }
             if( !reads ) continue;

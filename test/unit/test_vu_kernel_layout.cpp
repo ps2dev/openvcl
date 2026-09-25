@@ -565,6 +565,40 @@ TEST_CASE("VuKernelRenameDecisions: scratches avoid used bases and each other")
     CHECK(decisions[0].scratch != decisions[1].scratch);
 }
 
+TEST_CASE("VuKernelRenameDecisions: fields of one VF coalesce into one decision")
+{
+    std::vector<VuKernelRenameHint> hints;
+    {
+        VuKernelRenameHint h; h.reg = "VF12.x"; h.entry = 0; h.stage = 0; h.kind = 1;
+        hints.push_back(h);
+    }
+    {
+        VuKernelRenameHint h; h.reg = "VF12.y"; h.entry = 1; h.stage = 1; h.kind = 0;
+        hints.push_back(h);
+    }
+    {
+        VuKernelRenameHint h; h.reg = "VF12.z"; h.entry = 2; h.stage = 1; h.kind = 1;
+        hints.push_back(h);
+    }
+    {
+        VuKernelRenameHint h; h.reg = "VF20.x"; h.entry = 3; h.stage = 0; h.kind = 1;
+        hints.push_back(h);
+    }
+
+    std::vector<std::string> usedBases;
+    usedBases.push_back("VF12");
+    usedBases.push_back("VF20");
+    std::vector<VuKernelRenameDecision> decisions;
+    buildVuKernelRenameDecisions(hints, usedBases, decisions);
+
+    REQUIRE(decisions.size() == 2u);
+    REQUIRE(decisions[0].assigned);
+    REQUIRE(decisions[1].assigned);
+    CHECK(decisions[0].reg == "VF12.xyz");
+    CHECK(decisions[1].reg == "VF20.x");
+    CHECK(decisions[0].scratch != decisions[1].scratch);
+}
+
 TEST_CASE("VuKernelRenameDecisions: budget exhaustion marks tail decisions unassigned")
 {
     // Build hints for 31 unique regs (VF02..VF32-equivalent) so the allocator
@@ -692,6 +726,45 @@ TEST_CASE("buildVuKernelRenameMoveSlots: unassigned when all slots forbidden or 
     REQUIRE(slots.size() == 1u);
     CHECK(!slots[0].assigned);
     CHECK(slots[0].lane == -1);
+}
+
+TEST_CASE("buildVuKernelRenameMoveSlots: field-disjoint reads do not forbid a move")
+{
+    VuKernelRenameDecision d;
+    d.reg = "VF20.xyz"; d.scratch = "VF31"; d.assigned = true;
+    std::vector<VuKernelRenameDecision> decisions; decisions.push_back(d);
+
+    VuKernelLayout layout;
+    layout.II = 1; layout.stageCount = 1; layout.feasible = true;
+    layout.entries.push_back(makeMoveLayoutEntry(0, 0));
+    std::vector<VuKernelEntryRegisters> entryRegs;
+    entryRegs.push_back(makeMoveEntryReads("VF20.w"));
+
+    VuKernelTemplate tmpl; tmpl.II = 1; tmpl.slots.resize(1);
+    std::vector<VuKernelRenameMoveSlot> slots;
+    buildVuKernelRenameMoveSlots(decisions, layout, entryRegs, tmpl, slots);
+    REQUIRE(slots.size() == 1u);
+    CHECK(slots[0].assigned);
+    CHECK(slots[0].modSlot == 0u);
+}
+
+TEST_CASE("buildVuKernelRenameMoveSlots: overlapping field reads forbid a move")
+{
+    VuKernelRenameDecision d;
+    d.reg = "VF20.xyz"; d.scratch = "VF31"; d.assigned = true;
+    std::vector<VuKernelRenameDecision> decisions; decisions.push_back(d);
+
+    VuKernelLayout layout;
+    layout.II = 1; layout.stageCount = 1; layout.feasible = true;
+    layout.entries.push_back(makeMoveLayoutEntry(0, 0));
+    std::vector<VuKernelEntryRegisters> entryRegs;
+    entryRegs.push_back(makeMoveEntryReads("VF20.y"));
+
+    VuKernelTemplate tmpl; tmpl.II = 1; tmpl.slots.resize(1);
+    std::vector<VuKernelRenameMoveSlot> slots;
+    buildVuKernelRenameMoveSlots(decisions, layout, entryRegs, tmpl, slots);
+    REQUIRE(slots.size() == 1u);
+    CHECK(!slots[0].assigned);
 }
 
 TEST_CASE("buildVuKernelRenameMoveSlots: propagates !assigned decisions")

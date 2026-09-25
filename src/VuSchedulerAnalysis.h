@@ -238,6 +238,8 @@ struct VuSoftwarePipelineSuffixStore
 //   SPLIT_CLONE       — synthesize one per-field clone of the source token
 //                       via splitMultiFieldOpByFieldDecisions(), then select
 //                       the cloneOrdinal-th element of the split sequence.
+//   RETARGET_DEST     — emit a whole-destination-safe source token with its
+//                       destination VF retargeted to decisionIndex's scratch.
 //   MATERIALIZE_MOVE  — synthesize a MOVE that materializes the rename
 //                       scratch for decisionIndex; emitted BEFORE the
 //                       corresponding cell's PASSTHROUGH op.
@@ -253,8 +255,9 @@ struct VuKernelRefitNode
 	{
 		ROLE_PASSTHROUGH      = 0,
 		ROLE_SPLIT_CLONE      = 1,
-		ROLE_MATERIALIZE_MOVE = 2,
-		ROLE_TAIL_MOVE        = 3
+		ROLE_RETARGET_DEST    = 2,
+		ROLE_MATERIALIZE_MOVE = 3,
+		ROLE_TAIL_MOVE        = 4
 	};
 	unsigned int role;
 	unsigned int sourceCellIndex;
@@ -269,6 +272,26 @@ struct VuKernelRefitNode
 		  decisionIndex( NO_INDEX ),
 		  cloneOrdinal( 0 ) {}
 };
+
+// Generic score used by the bounded exact-source candidate sweep. Selection is
+// based on the post-rename/refit schedule, not on the raw source II: lower
+// refit II wins, then lower refit stage count, then fewer expanded/refit nodes,
+// with source II used only as the final deterministic tie-break.
+struct VuKernelCandidateScore
+{
+	bool valid;
+	unsigned int sourceII;
+	unsigned int refitII;
+	unsigned int refitStageCount;
+	unsigned int refitMainTokenCount;
+
+	VuKernelCandidateScore()
+		: valid( false ), sourceII( 0 ), refitII( 0 ),
+		  refitStageCount( 0 ), refitMainTokenCount( 0 ) {}
+};
+
+bool isVuKernelCandidateScoreBetter( const VuKernelCandidateScore& candidate,
+	                                  const VuKernelCandidateScore& incumbent );
 
 struct VuLoopPipelineOpportunity
 {

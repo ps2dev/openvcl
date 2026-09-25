@@ -146,6 +146,39 @@ overrides the default 200000-state safety cap. Each invocation emits a
 revision counts. This flag does not enable production codegen by itself.
 `OPENVCL_EXACT_FEASIBILITY_MAX_STAGES=N` caps the search to slots below
 `N*II`; the Python tool exposes the same restriction as `--max-stages N`.
+`OPENVCL_EXACT_FEASIBILITY_START_II=N` starts an experimental precise probe at
+an explicit candidate II (within the normal bounded search range). This is
+useful for comparing different exact witnesses whose later rename/expanded-DDG
+costs are not monotonic in the original II; it is diagnostic and does not
+change default code generation.
+
+`OPENVCL_DUMP_PRECISE_MULTI_Q_EMISSION_GATES=1` carries a precise multi-Q probe
+through rename decisions and the expanded-DDG refit, then reports the original
+II, rename blockers, expanded token count, and refit II/stage count without
+promoting that probe to production codegen. Combine it with
+`OPENVCL_EXPERIMENT_EXACT_EXPANDED_DDG_REFIT=1` to use the precise rename-aware
+MII/exact fallback for the expanded shadow layout, and with
+`OPENVCL_USE_EXPANDED_DDG_PLACER=1` for the detailed `[expanded-ddg-refit]`
+summary.
+
+`OPENVCL_EXPERIMENT_EXACT_CANDIDATE_SWEEP=1` runs the bounded Phase 3.5 global
+candidate experiment. It starts at the precise renamed MII and evaluates four
+consecutive source IIs by default. Every source candidate must produce an exact,
+independently revalidated witness; each accepted source schedule is then carried
+through rename expansion and expanded-DDG refit. The final selector compares
+refit II, refit stage count, expanded/refit node count, and source II in that
+order. `OPENVCL_EXACT_CANDIDATE_SWEEP_WIDTH=N` changes the window (1..16) and
+`OPENVCL_EXACT_CANDIDATE_SWEEP_MAX_STAGES=N` changes the exact source-stage cap
+(1..8, default 2). To keep the experiment practical on large search spaces,
+`OPENVCL_EXACT_CANDIDATE_SWEEP_MAX_SOURCE_II=N` changes the generic source-II
+ceiling (default 64, maximum 4096) and
+`OPENVCL_EXACT_CANDIDATE_SWEEP_MAX_STATES=N` changes the per-candidate solver
+budget (default 5000, maximum 200000). A loop above the source-II ceiling emits
+a summary with `budgetSkipped=1`; an exhausted solver budget remains `UNKNOWN`
+and never becomes a valid candidate. The experiment emits one
+`[exact-candidate-sweep-candidate]` line per source II and one
+`[exact-candidate-sweep]` summary. It is diagnostic only and does not select a
+production codegen path.
 
 Characterize those accepted no-Q rewrites against a completed baseline:
 

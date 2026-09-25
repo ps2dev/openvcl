@@ -6391,6 +6391,68 @@ namespace
 		return false;
 	}
 
+	bool findWholeDestinationKernelRenameDecision(
+	    const Token& token,
+	    const std::vector<VuKernelRenameDecision>& decisions,
+	    unsigned int& decisionIndexOut )
+	{
+		// A plain LQ, or an op already proven safe for per-field splitting,
+		// can keep its original vector form when every written destination
+		// field is carried by one rename decision. Retargeting only the DEST
+		// argument preserves every source operand while avoiding needless
+		// single-field clones.
+		std::string opName = token.name();
+		std::string::size_type bracket = opName.find( '[' );
+		if( bracket != std::string::npos ) opName = opName.substr( 0, bracket );
+		std::string::size_type dot = opName.find( '.' );
+		if( dot != std::string::npos ) opName = opName.substr( 0, dot );
+		for( std::string::size_type i = 0; i < opName.size(); ++i )
+			if( opName[i] >= 'A' && opName[i] <= 'Z' )
+				opName[i] = static_cast<char>( opName[i] - 'A' + 'a' );
+		if( opName != "lq" && !vuOpIsSplittableForKernelRenameByName( token.name() ) )
+			return false;
+
+		const Token::Argument* dest = NULL;
+		for( std::list<Token::Argument>::const_iterator a = token.arguments().begin();
+		     a != token.arguments().end(); ++a )
+		{
+			if( a->type() != Token::Argument::FLOAT_REGISTER ) continue;
+			if( !( a->flags() & Token::Argument::DEST ) || !( a->flags() & Token::Argument::WRITE ) )
+				continue;
+			if( dest != NULL ) return false;
+			dest = &*a;
+		}
+		if( dest == NULL ) return false;
+
+		std::string destKey;
+		if( !vuRegisterKey( *dest, destKey ) ) return false;
+		const std::string destBase = registerBaseKey( destKey );
+		unsigned int destMask = token.fields() | dest->fields();
+		if( destMask == 0 ) destMask = Token::X | Token::Y | Token::Z | Token::W;
+
+		for( unsigned int d = 0; d < decisions.size(); ++d )
+		{
+			if( !decisions[d].assigned ) continue;
+			if( decisionRegBase( decisions[d].reg ) != destBase ) continue;
+			unsigned int decisionMask = decisionRegFieldMask( decisions[d].reg );
+			if( decisionMask == 0 ) decisionMask = Token::X | Token::Y | Token::Z | Token::W;
+			if( ( destMask & ~decisionMask ) != 0 ) continue;
+			decisionIndexOut = d;
+			return true;
+		}
+		return false;
+	}
+
+	Token retargetWholeKernelRenameDestination(
+	    const Token& token,
+	    const VuKernelRenameDecision& decision )
+	{
+		Token clone( token );
+		Token::Argument* dest = tokenDestinationFloatArgument( clone );
+		if( dest != NULL ) setFloatRegisterArgumentBase( *dest, decision.scratch );
+		return clone;
+	}
+
 	// Split a multi-field FMAC op into single-field clones, one per
 	// destination field that is targeted by a decision matching the
 	// op's destination base. Fields not covered by any decision are
@@ -7163,6 +7225,20 @@ VuSoftwarePipelineRewritePlan::VuSoftwarePipelineRewritePlan()
 	kernelRewriteRefitMainTokenCount = 0;
 }
 
+bool isVuKernelCandidateScoreBetter( const VuKernelCandidateScore& candidate,
+	                                  const VuKernelCandidateScore& incumbent )
+{
+	if( !candidate.valid ) return false;
+	if( !incumbent.valid ) return true;
+	if( candidate.refitII != incumbent.refitII )
+		return candidate.refitII < incumbent.refitII;
+	if( candidate.refitStageCount != incumbent.refitStageCount )
+		return candidate.refitStageCount < incumbent.refitStageCount;
+	if( candidate.refitMainTokenCount != incumbent.refitMainTokenCount )
+		return candidate.refitMainTokenCount < incumbent.refitMainTokenCount;
+	return candidate.sourceII < incumbent.sourceII;
+}
+
 std::vector<VuBasicBlock> buildVuBasicBlocks( const std::list<Token>& tokens )
 {
 	std::vector<VuBasicBlock> blocks;
@@ -7703,6 +7779,7 @@ namespace
 		{
 			ROLE_PASSTHROUGH,
 			ROLE_SPLIT_CLONE,
+			ROLE_RETARGET_DEST,
 			ROLE_MATERIALIZE_MOVE,
 			ROLE_TAIL_MOVE
 		};
@@ -7780,6 +7857,19 @@ namespace
 			if( idx >= indexedTokens.size() )
 				continue;
 			const Token& src = *indexedTokens[idx];
+			unsigned int retargetDecision = static_cast<unsigned int>( -1 );
+			if( findWholeDestinationKernelRenameDecision(
+			        src, plan.kernelRewriteRenameDecisions, retargetDecision ) )
+			{
+				VuKernelExpandedNode n;
+				n.role             = VuKernelExpandedNode::ROLE_RETARGET_DEST;
+				n.sourceCellIndex  = m;
+				n.sourceTokenIndex = idx;
+				n.decisionIndex    = retargetDecision;
+				n.cloneOrdinal     = 0;
+				out.push_back( n );
+				continue;
+			}
 			if( tokenIsKernelRenameMaterializeCandidate( src, plan ) )
 			{
 				for( unsigned int d = 0; d < plan.kernelRewriteRenameDecisions.size(); ++d )
@@ -7861,6 +7951,7 @@ namespace
 		{
 		case VuKernelExpandedNode::ROLE_PASSTHROUGH:       return "pass";
 		case VuKernelExpandedNode::ROLE_SPLIT_CLONE:       return "split";
+		case VuKernelExpandedNode::ROLE_RETARGET_DEST:     return "retarget";
 		case VuKernelExpandedNode::ROLE_MATERIALIZE_MOVE:  return "matMOVE";
 		case VuKernelExpandedNode::ROLE_TAIL_MOVE:         return "tailMOVE";
 		default: return "?";
@@ -8049,7 +8140,13 @@ namespace
 	    const std::vector<const Token*>& indexedTokens,
 	    const std::list<Token>& tokens,
 	    bool emitExpandedDDGDiagnostic = true,
-	    bool usePreciseRenamedRecMII = false )
+	    bool usePreciseRenamedRecMII = false,
+	    unsigned int forcedStartII = 0u,
+	    bool stopAtForcedII = false,
+	    unsigned int exactMaxStatesOverride = 0u,
+	    unsigned int exactMaxStagesOverride = 0u,
+	    bool forceExactFeasibility = false,
+	    bool requireExactWitness = false )
 	{
 			// Track 9.G step 4d: iterative modulo placement (diagnostic).
 			// Drive the priority order into the Modulo Reservation Table.
@@ -8089,10 +8186,36 @@ namespace
 			// Track 9.G step 4f: II-bumping retry. If placement leaves any node
 			// failed at the start II, bump II by one and retry until either
 			// every node is placed or we hit a safety cap.
-			const unsigned int miiStart = mii;
-			const unsigned int iiCap    = miiStart + 32;
-			unsigned int tryII = miiStart;
-			unsigned int bumps = 0;
+				const unsigned int miiStart = mii;
+				unsigned int iiCap = miiStart > std::numeric_limits<unsigned int>::max() - 32u
+				                     ? std::numeric_limits<unsigned int>::max()
+				                     : miiStart + 32u;
+				unsigned int tryII = miiStart;
+				unsigned int bumps = 0;
+				const bool exactFeasibility = usePreciseRenamedRecMII
+				    && ( forceExactFeasibility
+				         || std::getenv( "OPENVCL_EXPERIMENT_EXACT_FEASIBILITY_PLACER" ) != NULL );
+				if( exactFeasibility )
+				{
+					if( forcedStartII >= miiStart && forcedStartII <= iiCap )
+					{
+						tryII = forcedStartII;
+						bumps = tryII - miiStart;
+						if( stopAtForcedII ) iiCap = tryII;
+					}
+					else if( forcedStartII == 0u )
+					{
+						if( const char* value = std::getenv( "OPENVCL_EXACT_FEASIBILITY_START_II" ) )
+						{
+							const unsigned long parsed = std::strtoul( value, NULL, 10 );
+							if( parsed >= miiStart && parsed <= iiCap )
+							{
+								tryII = static_cast<unsigned int>( parsed );
+								bumps = tryII - miiStart;
+							}
+						}
+					}
+				}
 			unsigned int evictions = 0, recoveries = 0;
 			unsigned int upperOccFinal = 0, lowerOccFinal = 0;
 			unsigned int fdivOccFinal  = 0, efuOccFinal   = 0;
@@ -8367,7 +8490,7 @@ namespace
 						          << " dist=" << dDist[edge]
 						          << " lat=" << dLat[edge] << "\n";
 				}
-				if( failedCount == 0 ) break;
+					if( failedCount == 0 && !requireExactWitness ) break;
 				// Track 9.G step 4g: bounded backtracking. For each failed
 				// node f, try evicting a single already-placed node b that
 				// occupies a same-pipe MRT slot in f's [asap..hi] range. If
@@ -8552,121 +8675,134 @@ namespace
 						}
 					}
 				}
-				upperOccFinal = mrt.upperOccupancy();
-				lowerOccFinal = mrt.lowerOccupancy();
-				fdivOccFinal  = mrt.fdivOccupancy();
-				efuOccFinal   = mrt.efuOccupancy();
-				if( failedCount > 0 && usePreciseRenamedRecMII
-				    && std::getenv( "OPENVCL_EXPERIMENT_EXACT_FEASIBILITY_PLACER" ) != NULL )
-				{
-					std::vector<VuModuloFeasibilityNode> exactNodes( n );
-					for( unsigned int node = 0; node < n; ++node )
+					upperOccFinal = mrt.upperOccupancy();
+					lowerOccFinal = mrt.lowerOccupancy();
+					fdivOccFinal  = mrt.fdivOccupancy();
+					efuOccFinal   = mrt.efuOccupancy();
+					if( ( failedCount > 0 || requireExactWitness ) && exactFeasibility )
 					{
-						exactNodes[node].pipe = static_cast<unsigned int>( pipeOf[node] );
-						exactNodes[node].duration = durationOf[node];
-						exactNodes[node].lo = pr.asap[node];
-						unsigned int hi = pr.alap[node];
-						if( pipeOf[node] == 0 )
-							hi = exactNodes[node].lo;
-						else
-						{
-							if( hi < exactNodes[node].lo ) hi = exactNodes[node].lo;
-							if( hi < pr.scheduleLength ) hi = pr.scheduleLength;
-							if( hi < exactNodes[node].lo + tryII ) hi = exactNodes[node].lo + tryII;
-						}
-						exactNodes[node].hi = hi;
-					}
-					std::vector<VuModuloFeasibilityEdge> exactEdges( totalEdges );
-					for( unsigned int edge = 0; edge < totalEdges; ++edge )
-					{
-						exactEdges[edge].from = dFrom[edge];
-						exactEdges[edge].to = dTo[edge];
-						exactEdges[edge].distance = dDist[edge];
-						exactEdges[edge].latency = dLat[edge];
-					}
-					unsigned int maxStates = 200000u;
-					unsigned int maxStages = 0u;
-					if( const char* value = std::getenv( "OPENVCL_EXACT_FEASIBILITY_MAX_STATES" ) )
-					{
-						const unsigned long parsed = std::strtoul( value, NULL, 10 );
-						if( parsed > 0ul ) maxStates = static_cast<unsigned int>( parsed );
-					}
-					if( const char* value = std::getenv( "OPENVCL_EXACT_FEASIBILITY_MAX_STAGES" ) )
-					{
-						const unsigned long parsed = std::strtoul( value, NULL, 10 );
-						if( parsed > 0ul ) maxStages = static_cast<unsigned int>( parsed );
-					}
-					if( maxStages > 0u )
-					{
-						const unsigned long long maxSlot64 =
-						    static_cast<unsigned long long>( maxStages ) * tryII - 1ull;
-						const unsigned int maxSlot =
-						    maxSlot64 > std::numeric_limits<unsigned int>::max()
-						        ? std::numeric_limits<unsigned int>::max()
-						        : static_cast<unsigned int>( maxSlot64 );
-						for( unsigned int node = 0; node < exactNodes.size(); ++node )
-							if( exactNodes[node].hi > maxSlot ) exactNodes[node].hi = maxSlot;
-					}
-					const VuModuloFeasibilityResult exact =
-					    solveVuModuloFeasibility( tryII, exactNodes, exactEdges, maxStates );
-					const char* status = exact.status == VuModuloFeasibilityResult::SAT ? "SAT"
-					                   : exact.status == VuModuloFeasibilityResult::UNSAT ? "UNSAT"
-					                   : "UNKNOWN";
-					std::cerr << "[modulo-exact-placer] loop=" << opportunity.label
-					          << " II=" << tryII
-					          << " status=" << status
-					          << " states=" << exact.states
-					          << " revisions=" << exact.revisions << "\n";
-					if( exact.status == VuModuloFeasibilityResult::SAT && exact.slots.size() == n )
-					{
-						ModuloReservationTable exactMrt( tryII );
-						bool reservationsValid = true;
-						bool dependenciesValid = true;
-						maxStage = 0;
+						bool exactAccepted = false;
+						std::vector<VuModuloFeasibilityNode> exactNodes( n );
 						for( unsigned int node = 0; node < n; ++node )
 						{
-							slotOf[node] = exact.slots[node];
-							stageOf[node] = exact.slots[node] / tryII;
-							placed[node] = true;
-							if( stageOf[node] > maxStage ) maxStage = stageOf[node];
-							const unsigned int mod = exact.slots[node] % tryII;
-							bool reserved = true;
-							switch( pipeOf[node] )
+							exactNodes[node].pipe = static_cast<unsigned int>( pipeOf[node] );
+							exactNodes[node].duration = durationOf[node];
+							exactNodes[node].lo = pr.asap[node];
+							unsigned int hi = pr.alap[node];
+							if( pipeOf[node] == 0 )
+								hi = exactNodes[node].lo;
+							else
 							{
-							case 1: reserved = exactMrt.reserveUpper( mod, mt[node] ); break;
-							case 2: reserved = exactMrt.reserveLower( mod, mt[node] ); break;
-							case 3: reserved = exactMrt.reserveFdiv( mod, durationOf[node], mt[node] ); break;
-							case 4: reserved = exactMrt.reserveEfu( mod, durationOf[node], mt[node] ); break;
-							default: break;
+								if( hi < exactNodes[node].lo ) hi = exactNodes[node].lo;
+								if( hi < pr.scheduleLength ) hi = pr.scheduleLength;
+								if( hi < exactNodes[node].lo + tryII ) hi = exactNodes[node].lo + tryII;
 							}
-							if( !reserved ) reservationsValid = false;
+							exactNodes[node].hi = hi;
 						}
-						for( unsigned int edge = 0; edge < totalEdges && dependenciesValid; ++edge )
+						std::vector<VuModuloFeasibilityEdge> exactEdges( totalEdges );
+						for( unsigned int edge = 0; edge < totalEdges; ++edge )
 						{
-							const long long actual =
-							    static_cast<long long>( exact.slots[dTo[edge]] )
-							    - static_cast<long long>( exact.slots[dFrom[edge]] );
-							const long long required =
-							    static_cast<long long>( dLat[edge] )
-							    - static_cast<long long>( dDist[edge] ) * tryII;
-							if( actual < required ) dependenciesValid = false;
+							exactEdges[edge].from = dFrom[edge];
+							exactEdges[edge].to = dTo[edge];
+							exactEdges[edge].distance = dDist[edge];
+							exactEdges[edge].latency = dLat[edge];
 						}
-						if( reservationsValid && dependenciesValid )
+						unsigned int maxStates = exactMaxStatesOverride > 0u
+						                       ? exactMaxStatesOverride : 200000u;
+						unsigned int maxStages = exactMaxStagesOverride;
+						if( exactMaxStatesOverride == 0u )
 						{
-							placedCount = n;
-							failedCount = 0;
-							upperOccFinal = exactMrt.upperOccupancy();
-							lowerOccFinal = exactMrt.lowerOccupancy();
-							fdivOccFinal = exactMrt.fdivOccupancy();
-							efuOccFinal = exactMrt.efuOccupancy();
+							if( const char* value = std::getenv( "OPENVCL_EXACT_FEASIBILITY_MAX_STATES" ) )
+							{
+								const unsigned long parsed = std::strtoul( value, NULL, 10 );
+								if( parsed > 0ul ) maxStates = static_cast<unsigned int>( parsed );
+							}
 						}
-						else
-							std::cerr << "[modulo-exact-validation] loop=" << opportunity.label
-							          << " II=" << tryII
-							          << " mrt=" << ( reservationsValid ? 1 : 0 )
-							          << " ddg=" << ( dependenciesValid ? 1 : 0 ) << "\n";
+						if( maxStages == 0u )
+						{
+							if( const char* value = std::getenv( "OPENVCL_EXACT_FEASIBILITY_MAX_STAGES" ) )
+							{
+								const unsigned long parsed = std::strtoul( value, NULL, 10 );
+								if( parsed > 0ul ) maxStages = static_cast<unsigned int>( parsed );
+							}
+						}
+						if( maxStages > 0u )
+						{
+							const unsigned long long maxSlot64 =
+							    static_cast<unsigned long long>( maxStages ) * tryII - 1ull;
+							const unsigned int maxSlot =
+							    maxSlot64 > std::numeric_limits<unsigned int>::max()
+							        ? std::numeric_limits<unsigned int>::max()
+							        : static_cast<unsigned int>( maxSlot64 );
+							for( unsigned int node = 0; node < exactNodes.size(); ++node )
+								if( exactNodes[node].hi > maxSlot ) exactNodes[node].hi = maxSlot;
+						}
+						const VuModuloFeasibilityResult exact =
+						    solveVuModuloFeasibility( tryII, exactNodes, exactEdges, maxStates );
+						const char* status = exact.status == VuModuloFeasibilityResult::SAT ? "SAT"
+						                   : exact.status == VuModuloFeasibilityResult::UNSAT ? "UNSAT"
+						                   : "UNKNOWN";
+						std::cerr << "[modulo-exact-placer] loop=" << opportunity.label
+						          << " II=" << tryII
+						          << " status=" << status
+						          << " states=" << exact.states
+						          << " revisions=" << exact.revisions << "\n";
+						if( exact.status == VuModuloFeasibilityResult::SAT && exact.slots.size() == n )
+						{
+							ModuloReservationTable exactMrt( tryII );
+							bool reservationsValid = true;
+							bool dependenciesValid = true;
+							maxStage = 0;
+							for( unsigned int node = 0; node < n; ++node )
+							{
+								slotOf[node] = exact.slots[node];
+								stageOf[node] = exact.slots[node] / tryII;
+								placed[node] = true;
+								if( stageOf[node] > maxStage ) maxStage = stageOf[node];
+								const unsigned int mod = exact.slots[node] % tryII;
+								bool reserved = true;
+								switch( pipeOf[node] )
+								{
+								case 1: reserved = exactMrt.reserveUpper( mod, mt[node] ); break;
+								case 2: reserved = exactMrt.reserveLower( mod, mt[node] ); break;
+								case 3: reserved = exactMrt.reserveFdiv( mod, durationOf[node], mt[node] ); break;
+								case 4: reserved = exactMrt.reserveEfu( mod, durationOf[node], mt[node] ); break;
+								default: break;
+								}
+								if( !reserved ) reservationsValid = false;
+							}
+							for( unsigned int edge = 0; edge < totalEdges && dependenciesValid; ++edge )
+							{
+								const long long actual =
+								    static_cast<long long>( exact.slots[dTo[edge]] )
+								    - static_cast<long long>( exact.slots[dFrom[edge]] );
+								const long long required =
+								    static_cast<long long>( dLat[edge] )
+								    - static_cast<long long>( dDist[edge] ) * tryII;
+								if( actual < required ) dependenciesValid = false;
+							}
+							if( reservationsValid && dependenciesValid )
+							{
+								placedCount = n;
+								failedCount = 0;
+								exactAccepted = true;
+								upperOccFinal = exactMrt.upperOccupancy();
+								lowerOccFinal = exactMrt.lowerOccupancy();
+								fdivOccFinal = exactMrt.fdivOccupancy();
+								efuOccFinal = exactMrt.efuOccupancy();
+							}
+							else
+								std::cerr << "[modulo-exact-validation] loop=" << opportunity.label
+								          << " II=" << tryII
+								          << " mrt=" << ( reservationsValid ? 1 : 0 )
+								          << " ddg=" << ( dependenciesValid ? 1 : 0 ) << "\n";
+						}
+						if( requireExactWitness && !exactAccepted )
+						{
+							placedCount = 0u;
+							failedCount = n > 0u ? n : 1u;
+						}
 					}
-				}
 				if( failedCount == 0 ) break;
 				if( usePreciseRenamedRecMII
 				    && std::getenv( "OPENVCL_EXPERIMENT_FAILED_FIRST_RETRY" ) != NULL
@@ -9806,7 +9942,10 @@ namespace
 	static void runExpandedDDGRefitDiagnostic(
 	    VuLoopPipelineOpportunity& opportunity,
 	    const std::vector<const Token*>& indexedTokens,
-	    const std::list<Token>& tokens )
+	    const std::list<Token>& tokens,
+	    bool forceExactExpandedRefit = false,
+	    unsigned int exactMaxStatesOverride = 0u,
+	    unsigned int exactMaxStagesOverride = 0u )
 	{
 		if( !opportunity.simpleCountedLoop )
 			return;
@@ -9880,6 +10019,7 @@ namespace
 
 		unsigned int passCount   = 0;
 		unsigned int splitCount  = 0;
+		unsigned int retargetCount = 0;
 		unsigned int matMoveCount = 0;
 		unsigned int tailMoveCount = 0;
 
@@ -9932,6 +10072,21 @@ namespace
 					}
 					break;
 				}
+				case VuKernelExpandedNode::ROLE_RETARGET_DEST:
+				{
+					++retargetCount;
+					if( n.sourceTokenIndex >= indexedTokens.size()
+					    || n.decisionIndex >= opportunity.kernelRewriteRenameDecisions.size() )
+						break;
+					shadowOwned.push_back( retargetWholeKernelRenameDestination(
+					    *indexedTokens[n.sourceTokenIndex],
+					    opportunity.kernelRewriteRenameDecisions[n.decisionIndex] ) );
+					const unsigned int newIdx = static_cast<unsigned int>( shadowIndexed.size() );
+					shadowIndexed.push_back( &shadowOwned.back() );
+					shadowIdxToNodeIdx[newIdx] = i;
+					shadowMainTokenIndices.push_back( newIdx );
+					break;
+				}
 				case VuKernelExpandedNode::ROLE_MATERIALIZE_MOVE:
 				case VuKernelExpandedNode::ROLE_TAIL_MOVE:
 				{
@@ -9939,14 +10094,10 @@ namespace
 						++matMoveCount;
 					else
 						++tailMoveCount;
-					Token mv( *donor );
-					mv.setLabel( "" );
-					mv.setName( "move" );
-					mv.setOperand( syntheticMoveOperand() );
-					mv.setFlags( Token::PROCESSED );
-					mv.setBroadcast( 0 );
-					mv.setFields( 0 );
-					mv.arguments().clear();
+					if( n.decisionIndex >= opportunity.kernelRewriteRenameDecisions.size() )
+						break;
+					Token mv = makeKernelRenameMoveToken(
+					    *donor, opportunity.kernelRewriteRenameDecisions[n.decisionIndex] );
 					shadowOwned.push_back( mv );
 					const unsigned int newIdx = static_cast<unsigned int>( shadowIndexed.size() );
 					shadowIndexed.push_back( &shadowOwned.back() );
@@ -9972,8 +10123,17 @@ namespace
 		shadow.kernelRewriteEntryStages.clear();
 		shadow.kernelRewriteStageCells.clear();
 
+		const bool exactExpandedRefit = forceExactExpandedRefit
+		    || std::getenv( "OPENVCL_EXPERIMENT_EXACT_EXPANDED_DDG_REFIT" ) != NULL;
 		runVuKernelPlacerAndScaffolding( shadow, shadowIndexed, tokens,
-		                                 /*emitExpandedDDGDiagnostic=*/false );
+		                                 /*emitExpandedDDGDiagnostic=*/false,
+		                                 /*usePreciseRenamedRecMII=*/exactExpandedRefit,
+		                                 /*forcedStartII=*/0u,
+		                                 /*stopAtForcedII=*/false,
+		                                 exactMaxStatesOverride,
+		                                 exactMaxStagesOverride,
+		                                 /*forceExactFeasibility=*/forceExactExpandedRefit,
+		                                 /*requireExactWitness=*/false );
 
 		// Track 9.G-1h step 4b-3b-4: publish scalar refit metrics back to
 		// the caller's opportunity so downstream consumers (4b-3b-5
@@ -10012,6 +10172,8 @@ namespace
 					dst.role = VuKernelRefitNode::ROLE_PASSTHROUGH; break;
 				case VuKernelExpandedNode::ROLE_SPLIT_CLONE:
 					dst.role = VuKernelRefitNode::ROLE_SPLIT_CLONE; break;
+				case VuKernelExpandedNode::ROLE_RETARGET_DEST:
+					dst.role = VuKernelRefitNode::ROLE_RETARGET_DEST; break;
 				case VuKernelExpandedNode::ROLE_MATERIALIZE_MOVE:
 					dst.role = VuKernelRefitNode::ROLE_MATERIALIZE_MOVE; break;
 				case VuKernelExpandedNode::ROLE_TAIL_MOVE:
@@ -10055,8 +10217,10 @@ namespace
 			          << " nodes=" << nodes.size()
 			          << " pass=" << passCount
 			          << " split=" << splitCount
+			          << " retarget=" << retargetCount
 			          << " matMOVE=" << matMoveCount
 			          << " tailMOVE=" << tailMoveCount
+			          << " exact=" << ( exactExpandedRefit ? 1 : 0 )
 			          << " origII=" << opportunity.kernelRewriteII
 			          << " shadowII=" << shadow.kernelRewriteII
 			          << " origStages=" << opportunity.kernelRewriteStageCount
@@ -10491,6 +10655,247 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 			          << " conflicts=" << probe.kernelRewriteConflicts
 			          << " mainTokens=" << probe.kernelRewriteMainTokens.size()
 			          << "\n";
+
+			if( std::getenv( "OPENVCL_DUMP_PRECISE_MULTI_Q_EMISSION_GATES" ) != NULL )
+			{
+				runExpandedDDGRefitDiagnostic( probe, indexedTokens, tokens );
+				VuSoftwarePipelineRewritePlan gate;
+				gate.label = opportunity.label;
+				gate.kernelRewriteII = probe.kernelRewriteII;
+				gate.kernelRewriteStageCount = probe.kernelRewriteStageCount;
+				gate.kernelRewriteConflicts = probe.kernelRewriteConflicts;
+				gate.kernelRewriteMainTokens = probe.kernelRewriteMainTokens;
+				gate.kernelRewriteRenameHints = probe.kernelRewriteRenameHints;
+				gate.kernelRewriteRenameDecisions = probe.kernelRewriteRenameDecisions;
+				gate.kernelRewriteRenameMoveSlots = probe.kernelRewriteRenameMoveSlots;
+				gate.drainTokenIndices = opportunity.drainTokenIndices;
+
+				unsigned int assignedDecisions = 0;
+				for( unsigned int d = 0; d < gate.kernelRewriteRenameDecisions.size(); ++d )
+					if( gate.kernelRewriteRenameDecisions[d].assigned ) ++assignedDecisions;
+				unsigned int assignedMoveSlots = 0;
+				for( unsigned int s = 0; s < gate.kernelRewriteRenameMoveSlots.size(); ++s )
+					if( gate.kernelRewriteRenameMoveSlots[s].assigned ) ++assignedMoveSlots;
+
+				const bool renameEligible =
+				    isVuPlanEligibleForKernelRenameEmission( gate, indexedTokens );
+				const unsigned int hardBlockers =
+				    countKernelRenameEmissionBlockers( gate, indexedTokens );
+				const unsigned int softBlockers =
+				    countKernelRenameEmissionSoftBlockers( gate, indexedTokens );
+
+				std::vector<VuKernelExpandedNode> expandedNodes;
+				buildVuKernelExpandedNodes( gate, indexedTokens, expandedNodes );
+				const unsigned int expandedMainTokens =
+				    static_cast<unsigned int>( expandedNodes.size() );
+				const unsigned int gridCapacity = gate.kernelRewriteII * 4u;
+
+				std::cerr << "[precise-multi-q-emission-gates] loop=" << opportunity.label
+				          << " II=" << gate.kernelRewriteII
+				          << " hints=" << gate.kernelRewriteRenameHints.size()
+				          << " decisions=" << gate.kernelRewriteRenameDecisions.size()
+				          << " assignedDecisions=" << assignedDecisions
+				          << " moveSlots=" << gate.kernelRewriteRenameMoveSlots.size()
+				          << " assignedMoveSlots=" << assignedMoveSlots
+				          << " renameEligible=" << ( renameEligible ? 1 : 0 )
+				          << " hardBlockers=" << hardBlockers
+				          << " softBlockers=" << softBlockers
+				          << " expandedMainTokens=" << expandedMainTokens
+				          << " gridCapacity=" << gridCapacity
+				          << " fits=" << ( expandedMainTokens <= gridCapacity ? 1 : 0 )
+				          << " refitII=" << probe.kernelRewriteRefitII
+				          << " refitStages=" << probe.kernelRewriteRefitStageCount
+				          << " refitConflicts=" << probe.kernelRewriteRefitConflicts
+				          << " refitMain=" << probe.kernelRewriteRefitMainTokenCount
+				          << "\n";
+
+				if( std::getenv( "OPENVCL_DUMP_PRECISE_MULTI_Q_EMISSION_GATES_DETAIL" ) != NULL )
+				{
+					for( unsigned int d = 0; d < gate.kernelRewriteRenameDecisions.size(); ++d )
+					{
+						const VuKernelRenameDecision& decision = gate.kernelRewriteRenameDecisions[d];
+						const VuKernelRenameMoveSlot& move = gate.kernelRewriteRenameMoveSlots[d];
+						if( decision.assigned && move.assigned ) continue;
+						std::cerr << "[precise-multi-q-emission-gate-detail] loop=" << opportunity.label
+						          << " II=" << gate.kernelRewriteII
+						          << " decision=" << d
+						          << " reg=" << decision.reg
+						          << " scratch=" << ( decision.assigned ? decision.scratch : std::string( "<none>" ) )
+						          << " decisionAssigned=" << ( decision.assigned ? 1 : 0 )
+						          << " moveAssigned=" << ( move.assigned ? 1 : 0 )
+						          << "\n";
+					}
+					const std::vector<std::string> hardOps =
+					    describeKernelRenameEmissionBlockers( gate, indexedTokens );
+					for( unsigned int b = 0; b < hardOps.size(); ++b )
+						std::cerr << "[precise-multi-q-emission-hard-blocker] loop=" << opportunity.label
+						          << " II=" << gate.kernelRewriteII
+						          << " op=" << hardOps[b] << "\n";
+					const std::vector<std::string> softOps =
+					    describeKernelRenameEmissionSoftBlockers( gate, indexedTokens );
+					for( unsigned int b = 0; b < softOps.size(); ++b )
+						std::cerr << "[precise-multi-q-emission-soft-blocker] loop=" << opportunity.label
+						          << " II=" << gate.kernelRewriteII
+						          << " op=" << softOps[b] << "\n";
+				}
+			}
+		}
+
+		// Phase 3.5: bounded global source-candidate sweep. Unlike the legacy
+		// exact probe, this does not stop at the first source II that is
+		// schedulable. Each exact source witness is carried through rename
+		// expansion and the expanded-DDG refit, then ranked by the final refit
+		// schedule. This remains diagnostic: the selected probe is not copied
+		// back into the production opportunity or consumed by codegen.
+		if( std::getenv( "OPENVCL_EXPERIMENT_EXACT_CANDIDATE_SWEEP" ) != NULL
+		    && opportunity.simpleCountedLoop
+		    && opportunity.mainTokenIndices.empty()
+		    && !opportunity.multiQPrologTokenIndices.empty()
+		    && !opportunity.multiQMainTokenIndices.empty() )
+		{
+			VuLoopPipelineOpportunity seed = opportunity;
+			seed.mainTokenIndices.clear();
+			seed.mainTokenIndices.insert( seed.mainTokenIndices.end(),
+			                              opportunity.multiQPrologTokenIndices.begin(),
+			                              opportunity.multiQPrologTokenIndices.end() );
+			seed.mainTokenIndices.insert( seed.mainTokenIndices.end(),
+			                              opportunity.multiQMainTokenIndices.begin(),
+			                              opportunity.multiQMainTokenIndices.end() );
+
+			const unsigned int preciseRecMII =
+			    computeLoopRecMIIPrecise( seed.mainTokenIndices, indexedTokens, true, NULL );
+			const unsigned int resMII = computeLoopResMII( seed.mainTokenIndices, indexedTokens );
+			const unsigned int startII = preciseRecMII > resMII ? preciseRecMII : resMII;
+
+			unsigned int sweepWidth = 4u;
+			if( const char* value = std::getenv( "OPENVCL_EXACT_CANDIDATE_SWEEP_WIDTH" ) )
+			{
+				const unsigned long parsed = std::strtoul( value, NULL, 10 );
+				if( parsed > 0ul )
+					sweepWidth = static_cast<unsigned int>( parsed > 16ul ? 16ul : parsed );
+			}
+			unsigned int maxStages = 2u;
+			if( const char* value = std::getenv( "OPENVCL_EXACT_CANDIDATE_SWEEP_MAX_STAGES" ) )
+			{
+				const unsigned long parsed = std::strtoul( value, NULL, 10 );
+				if( parsed > 0ul )
+					maxStages = static_cast<unsigned int>( parsed > 8ul ? 8ul : parsed );
+			}
+			unsigned int maxStates = 5000u;
+			if( const char* value = std::getenv( "OPENVCL_EXACT_CANDIDATE_SWEEP_MAX_STATES" ) )
+			{
+				const unsigned long parsed = std::strtoul( value, NULL, 10 );
+				if( parsed > 0ul )
+					maxStates = static_cast<unsigned int>( parsed > 200000ul ? 200000ul : parsed );
+			}
+			unsigned int maxSourceII = 64u;
+			if( const char* value = std::getenv( "OPENVCL_EXACT_CANDIDATE_SWEEP_MAX_SOURCE_II" ) )
+			{
+				const unsigned long parsed = std::strtoul( value, NULL, 10 );
+				if( parsed > 0ul )
+					maxSourceII = static_cast<unsigned int>(
+					    parsed > 4096ul ? 4096ul : parsed );
+			}
+
+			VuKernelCandidateScore bestScore;
+			unsigned int evaluated = 0u;
+			unsigned int validCandidates = 0u;
+			for( unsigned int offset = 0; offset < sweepWidth; ++offset )
+			{
+				if( startII > std::numeric_limits<unsigned int>::max() - offset ) break;
+				const unsigned int sourceII = startII + offset;
+				if( sourceII > maxSourceII ) break;
+				VuLoopPipelineOpportunity candidate = seed;
+				runVuKernelPlacerAndScaffolding( candidate,
+				                                 indexedTokens,
+				                                 tokens,
+				                                 /*emitExpandedDDGDiagnostic=*/false,
+				                                 /*usePreciseRenamedRecMII=*/true,
+				                                 sourceII,
+				                                 /*stopAtForcedII=*/true,
+				                                 maxStates,
+				                                 maxStages,
+				                                 /*forceExactFeasibility=*/true,
+				                                 /*requireExactWitness=*/true );
+				++evaluated;
+
+				const bool sourceFeasible =
+				    candidate.kernelRewriteII == sourceII
+				    && candidate.kernelRewriteStageCount > 0u
+				    && candidate.kernelRewriteConflicts == 0u
+				    && !candidate.kernelRewriteMainTokens.empty();
+
+				VuSoftwarePipelineRewritePlan gate;
+				gate.label = opportunity.label;
+				gate.kernelRewriteII = candidate.kernelRewriteII;
+				gate.kernelRewriteStageCount = candidate.kernelRewriteStageCount;
+				gate.kernelRewriteConflicts = candidate.kernelRewriteConflicts;
+				gate.kernelRewriteMainTokens = candidate.kernelRewriteMainTokens;
+				gate.kernelRewriteRenameHints = candidate.kernelRewriteRenameHints;
+				gate.kernelRewriteRenameDecisions = candidate.kernelRewriteRenameDecisions;
+				gate.kernelRewriteRenameMoveSlots = candidate.kernelRewriteRenameMoveSlots;
+				gate.drainTokenIndices = opportunity.drainTokenIndices;
+				const bool renameReady = candidate.kernelRewriteRenameHints.empty()
+				    || isVuPlanEligibleForKernelRenameEmission( gate, indexedTokens );
+				const unsigned int hardBlockers = candidate.kernelRewriteRenameHints.empty()
+				    ? 0u : countKernelRenameEmissionBlockers( gate, indexedTokens );
+				const unsigned int softBlockers = candidate.kernelRewriteRenameHints.empty()
+				    ? 0u : countKernelRenameEmissionSoftBlockers( gate, indexedTokens );
+
+				if( sourceFeasible && renameReady )
+					runExpandedDDGRefitDiagnostic( candidate, indexedTokens, tokens,
+					                                 /*forceExactExpandedRefit=*/true,
+					                                 maxStates,
+					                                 maxStages );
+
+				VuKernelCandidateScore score;
+				score.sourceII = sourceII;
+				score.refitII = candidate.kernelRewriteRefitII;
+				score.refitStageCount = candidate.kernelRewriteRefitStageCount;
+				score.refitMainTokenCount = candidate.kernelRewriteRefitMainTokenCount;
+				score.valid = sourceFeasible
+				    && renameReady
+				    && score.refitII > 0u
+				    && candidate.kernelRewriteRefitConflicts == 0u
+				    && score.refitMainTokenCount > 0u
+				    && !candidate.kernelRewriteRefitMainTokens.empty();
+				if( score.valid ) ++validCandidates;
+
+				std::cerr << "[exact-candidate-sweep-candidate] loop=" << opportunity.label
+				          << " sourceII=" << sourceII
+				          << " sourceFeasible=" << ( sourceFeasible ? 1 : 0 )
+				          << " sourceStages=" << candidate.kernelRewriteStageCount
+				          << " renameReady=" << ( renameReady ? 1 : 0 )
+				          << " hardBlockers=" << hardBlockers
+				          << " softBlockers=" << softBlockers
+				          << " refitII=" << score.refitII
+				          << " refitStages=" << score.refitStageCount
+				          << " refitMain=" << score.refitMainTokenCount
+				          << " valid=" << ( score.valid ? 1 : 0 )
+				          << "\n";
+
+				if( isVuKernelCandidateScoreBetter( score, bestScore ) )
+					bestScore = score;
+			}
+
+			std::cerr << "[exact-candidate-sweep] loop=" << opportunity.label
+			          << " startII=" << startII
+			          << " width=" << sweepWidth
+			          << " maxSourceII=" << maxSourceII
+			          << " maxStates=" << maxStates
+			          << " maxStages=" << maxStages
+			          << " evaluated=" << evaluated
+			          << " valid=" << validCandidates
+			          << " budgetSkipped=" << ( startII > maxSourceII ? 1 : 0 )
+			          << " selected=" << ( bestScore.valid ? 1 : 0 );
+			if( bestScore.valid )
+			{
+				std::cerr << " sourceII=" << bestScore.sourceII
+				          << " refitII=" << bestScore.refitII
+				          << " refitStages=" << bestScore.refitStageCount
+				          << " refitMain=" << bestScore.refitMainTokenCount;
+			}
+			std::cerr << "\n";
 		}
 
 		if( std::getenv( "OPENVCL_DUMP_PIPELINE_OPPORTUNITIES" ) != NULL )
@@ -11855,64 +12260,43 @@ std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( 
 			if( !isVuPlanEligibleForKernelRenameEmission( *p, indexedTokens ) )
 				continue;
 			unsigned int splitGroups        = 0;
-			unsigned int expandedFromSplits = 0;
+			unsigned int splitNodes         = 0;
+			unsigned int retargetNodes      = 0;
 			unsigned int materializeMOVEs   = 0;
 			unsigned int passthrough        = 0;
-			unsigned int nopSentinels       = 0;
+			unsigned int tailMOVEs          = 0;
 			unsigned int assignedDecisions  = 0;
 			for( unsigned int d = 0; d < p->kernelRewriteRenameDecisions.size(); ++d )
 				if( p->kernelRewriteRenameDecisions[d].assigned )
 					++assignedDecisions;
-			for( unsigned int m = 0; m < p->kernelRewriteMainTokens.size(); ++m )
+
+			std::vector<VuKernelExpandedNode> expandedNodes;
+			buildVuKernelExpandedNodes( *p, indexedTokens, expandedNodes );
+			std::set<unsigned int> splitSources;
+			for( unsigned int n = 0; n < expandedNodes.size(); ++n )
 			{
-				const unsigned int idx = p->kernelRewriteMainTokens[m];
-				if( idx == VuKernelRewritePlan::NO_TOKEN )
+				switch( expandedNodes[n].role )
 				{
-					++nopSentinels;
-					continue;
-				}
-				if( idx >= indexedTokens.size() )
-					continue;
-				const Token& src = *indexedTokens[idx];
-				if( tokenIsKernelRenameMaterializeCandidate( src, *p ) )
-				{
-					// 4b-8a: count only decisions whose original base is
-					// actually read by `src`.
-					for( unsigned int d = 0; d < p->kernelRewriteRenameDecisions.size(); ++d )
-					{
-						if( !p->kernelRewriteRenameDecisions[d].assigned )
-							continue;
-						if( tokenReadsDecisionBase( src, p->kernelRewriteRenameDecisions[d].reg ) )
-							++materializeMOVEs;
-					}
-					++passthrough; // the unsplit op itself
-					continue;
-				}
-				std::list<Token> split;
-				splitMultiFieldOpByFieldDecisions( src, p->kernelRewriteRenameDecisions, split );
-				const unsigned int sz = static_cast<unsigned int>( split.size() );
-				if( sz > 1u )
-				{
-					++splitGroups;
-					expandedFromSplits += sz;
-				}
-				else
-				{
-					++passthrough;
+				case VuKernelExpandedNode::ROLE_PASSTHROUGH:
+					++passthrough; break;
+				case VuKernelExpandedNode::ROLE_SPLIT_CLONE:
+					++splitNodes;
+					splitSources.insert( expandedNodes[n].sourceCellIndex );
+					break;
+				case VuKernelExpandedNode::ROLE_RETARGET_DEST:
+					++retargetNodes; break;
+				case VuKernelExpandedNode::ROLE_MATERIALIZE_MOVE:
+					++materializeMOVEs; break;
+				case VuKernelExpandedNode::ROLE_TAIL_MOVE:
+					++tailMOVEs; break;
 				}
 			}
-			// 4b-8b: count only decisions whose base is read by a drain
-			// token (others' tail MOVEs are skipped).
-			unsigned int tailMOVEs = 0;
-			for( unsigned int d = 0; d < p->kernelRewriteRenameDecisions.size(); ++d )
-			{
-				if( !p->kernelRewriteRenameDecisions[d].assigned )
-					continue;
-				if( drainReadsDecisionBase( *p, indexedTokens, p->kernelRewriteRenameDecisions[d].reg ) )
-					++tailMOVEs;
-			}
+			splitGroups = static_cast<unsigned int>( splitSources.size() );
 			const unsigned int expandedMainTokens =
-				expandedFromSplits + materializeMOVEs + tailMOVEs + passthrough;
+				static_cast<unsigned int>( expandedNodes.size() );
+			unsigned int nopSentinels = 0;
+			for( unsigned int m = 0; m < p->kernelRewriteMainTokens.size(); ++m )
+				if( p->kernelRewriteMainTokens[m] == VuKernelRewritePlan::NO_TOKEN ) ++nopSentinels;
 			const unsigned int gridCapacity = p->kernelRewriteII * 4u;
 			std::cerr << "[kernel-rename-emission-expansion] loop=" << p->label
 			          << " II=" << p->kernelRewriteII
@@ -11920,7 +12304,8 @@ std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( 
 			          << " mainTokens=" << p->kernelRewriteMainTokens.size()
 			          << " nopSentinels=" << nopSentinels
 			          << " splitGroups=" << splitGroups
-			          << " expandedFromSplits=" << expandedFromSplits
+			          << " splitNodes=" << splitNodes
+			          << " retarget=" << retargetNodes
 			          << " materializeMOVEs=" << materializeMOVEs
 			          << " tailMOVEs=" << tailMOVEs
 			          << " passthrough=" << passthrough
@@ -12171,6 +12556,15 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 			const Token& src = *indexedTokens[*m];
 			if( renameEligible )
 			{
+				unsigned int retargetDecision = static_cast<unsigned int>( -1 );
+				if( findWholeDestinationKernelRenameDecision(
+				        src, plan.kernelRewriteRenameDecisions, retargetDecision ) )
+				{
+					output.push_back( tokenWithoutLabel(
+					    retargetWholeKernelRenameDestination(
+					        src, plan.kernelRewriteRenameDecisions[retargetDecision] ) ) );
+					continue;
+				}
 				// 8b-2d-3: if `src` is a soft blocker — unsplittable,
 				// touches a decision base, read-only of that base —
 				// materialize the renamed reg from its scratches
@@ -12843,6 +13237,10 @@ unsigned int countKernelRenameEmissionBlockers( const VuSoftwarePipelineRewriteP
 		const Token& tk = *indexedTokens[idx];
 		if( !tokenTouchesAnyDecisionBase( tk, bases ) )
 			continue;
+		unsigned int retargetDecision = static_cast<unsigned int>( -1 );
+		if( findWholeDestinationKernelRenameDecision(
+		        tk, plan.kernelRewriteRenameDecisions, retargetDecision ) )
+			continue;
 		if( vuOpIsSplittableForKernelRename( tk ) )
 			continue;
 		// Track 9.G step 8b-2d-3: read-only unsplittable touches are
@@ -12874,6 +13272,10 @@ unsigned int countKernelRenameEmissionSoftBlockers( const VuSoftwarePipelineRewr
 		const Token& tk = *indexedTokens[idx];
 		if( !tokenTouchesAnyDecisionBase( tk, bases ) )
 			continue;
+		unsigned int retargetDecision = static_cast<unsigned int>( -1 );
+		if( findWholeDestinationKernelRenameDecision(
+		        tk, plan.kernelRewriteRenameDecisions, retargetDecision ) )
+			continue;
 		if( vuOpIsSplittableForKernelRename( tk ) )
 			continue;
 		if( tokenWritesAnyDecisionBase( tk, bases ) )
@@ -12898,6 +13300,10 @@ std::vector<std::string> describeKernelRenameEmissionBlockers(
 			continue;
 		const Token& tk = *indexedTokens[idx];
 		if( !tokenTouchesAnyDecisionBase( tk, bases ) )
+			continue;
+		unsigned int retargetDecision = static_cast<unsigned int>( -1 );
+		if( findWholeDestinationKernelRenameDecision(
+		        tk, plan.kernelRewriteRenameDecisions, retargetDecision ) )
 			continue;
 		if( vuOpIsSplittableForKernelRename( tk ) )
 			continue;
@@ -12926,6 +13332,10 @@ std::vector<std::string> describeKernelRenameEmissionSoftBlockers(
 		const Token& tk = *indexedTokens[idx];
 		if( !tokenTouchesAnyDecisionBase( tk, bases ) )
 			continue;
+		unsigned int retargetDecision = static_cast<unsigned int>( -1 );
+		if( findWholeDestinationKernelRenameDecision(
+		        tk, plan.kernelRewriteRenameDecisions, retargetDecision ) )
+			continue;
 		if( vuOpIsSplittableForKernelRename( tk ) )
 			continue;
 		if( tokenWritesAnyDecisionBase( tk, bases ) )
@@ -12948,6 +13358,10 @@ bool tokenIsKernelRenameMaterializeCandidate( const Token& token,
 		return false;
 	const std::vector<std::string> bases = collectDecisionBases( plan );
 	if( !tokenTouchesAnyDecisionBase( token, bases ) )
+		return false;
+	unsigned int retargetDecision = static_cast<unsigned int>( -1 );
+	if( findWholeDestinationKernelRenameDecision(
+	        token, plan.kernelRewriteRenameDecisions, retargetDecision ) )
 		return false;
 	if( vuOpIsSplittableForKernelRename( token ) )
 		return false;
