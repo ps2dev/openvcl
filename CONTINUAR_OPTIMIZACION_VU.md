@@ -234,3 +234,20 @@ slots 68, 73 y 74 respectivamente. Por tanto el siguiente experimento debe
 trabajar sobre la **selección de slot legal** del placer (no solo el orden de
 nodos), manteniendo esas aristas intactas; en particular conviene comparar
 earliest-slot con una selección dirigida por slack/vecindad ya colocada.
+### 2026-09-25: slot-selection follow-up
+
+The next generic modulo-placement experiments did not improve the indexed
+transform loop and were discarded from the implementation. Recomputing
+ASAP/ALAP/priority after every II bump was substantially slower and did not
+produce a useful result in practical time; the current placer intentionally
+keeps the priority computed at the initial MII. Two deterministic slot-order
+experiments were also negative: preferring candidates close to already-placed
+DDG neighbours kept `xform_loop_lid` at II=46 while making
+`pt_light_vert_loop_lid` much worse (II=114), and modulo-neighbour proximity
+made `xform_loop_lid` infeasible within the probe cap. Tightening the candidate
+range to the exact bounds implied by already-placed neighbours was neutral:
+`xform_loop_lid` remained II=46 and `pt_light_vert_loop_lid` remained II=114.
+No experimental code from these attempts is retained. The remaining useful
+direction is therefore bounded local repair/backtracking around the failed
+SQ/MFIR/IADDIU neighbourhood, rather than another global priority or slot-order
+heuristic; any such repair must continue to validate the complete DDG and MRT.
