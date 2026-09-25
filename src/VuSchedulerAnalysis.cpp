@@ -1,6 +1,7 @@
 #include "VuSchedulerAnalysis.h"
 
 #include "VuLatencyTracker.h"
+#include "VuModuloFeasibilitySolver.h"
 #include "VuModuloReservationTable.h"
 #include "VuKernelLayout.h"
 #include "VuSchedulingRules.h"
@@ -8554,6 +8555,84 @@ namespace
 				lowerOccFinal = mrt.lowerOccupancy();
 				fdivOccFinal  = mrt.fdivOccupancy();
 				efuOccFinal   = mrt.efuOccupancy();
+				if( failedCount > 0 && usePreciseRenamedRecMII
+				    && std::getenv( "OPENVCL_EXPERIMENT_EXACT_FEASIBILITY_PLACER" ) != NULL )
+				{
+					std::vector<VuModuloFeasibilityNode> exactNodes( n );
+					for( unsigned int node = 0; node < n; ++node )
+					{
+						exactNodes[node].pipe = static_cast<unsigned int>( pipeOf[node] );
+						exactNodes[node].duration = durationOf[node];
+						exactNodes[node].lo = pr.asap[node];
+						unsigned int hi = pr.alap[node];
+						if( pipeOf[node] == 0 )
+							hi = exactNodes[node].lo;
+						else
+						{
+							if( hi < exactNodes[node].lo ) hi = exactNodes[node].lo;
+							if( hi < pr.scheduleLength ) hi = pr.scheduleLength;
+							if( hi < exactNodes[node].lo + tryII ) hi = exactNodes[node].lo + tryII;
+						}
+						exactNodes[node].hi = hi;
+					}
+					std::vector<VuModuloFeasibilityEdge> exactEdges( totalEdges );
+					for( unsigned int edge = 0; edge < totalEdges; ++edge )
+					{
+						exactEdges[edge].from = dFrom[edge];
+						exactEdges[edge].to = dTo[edge];
+						exactEdges[edge].distance = dDist[edge];
+						exactEdges[edge].latency = dLat[edge];
+					}
+					unsigned int maxStates = 200000u;
+					if( const char* value = std::getenv( "OPENVCL_EXACT_FEASIBILITY_MAX_STATES" ) )
+					{
+						const unsigned long parsed = std::strtoul( value, NULL, 10 );
+						if( parsed > 0ul ) maxStates = static_cast<unsigned int>( parsed );
+					}
+					const VuModuloFeasibilityResult exact =
+					    solveVuModuloFeasibility( tryII, exactNodes, exactEdges, maxStates );
+					const char* status = exact.status == VuModuloFeasibilityResult::SAT ? "SAT"
+					                   : exact.status == VuModuloFeasibilityResult::UNSAT ? "UNSAT"
+					                   : "UNKNOWN";
+					std::cerr << "[modulo-exact-placer] loop=" << opportunity.label
+					          << " II=" << tryII
+					          << " status=" << status
+					          << " states=" << exact.states
+					          << " revisions=" << exact.revisions << "\n";
+					if( exact.status == VuModuloFeasibilityResult::SAT && exact.slots.size() == n )
+					{
+						ModuloReservationTable exactMrt( tryII );
+						bool reservationsValid = true;
+						maxStage = 0;
+						for( unsigned int node = 0; node < n; ++node )
+						{
+							slotOf[node] = exact.slots[node];
+							stageOf[node] = exact.slots[node] / tryII;
+							placed[node] = true;
+							if( stageOf[node] > maxStage ) maxStage = stageOf[node];
+							const unsigned int mod = exact.slots[node] % tryII;
+							bool reserved = true;
+							switch( pipeOf[node] )
+							{
+							case 1: reserved = exactMrt.reserveUpper( mod, mt[node] ); break;
+							case 2: reserved = exactMrt.reserveLower( mod, mt[node] ); break;
+							case 3: reserved = exactMrt.reserveFdiv( mod, durationOf[node], mt[node] ); break;
+							case 4: reserved = exactMrt.reserveEfu( mod, durationOf[node], mt[node] ); break;
+							default: break;
+							}
+							if( !reserved ) reservationsValid = false;
+						}
+						if( reservationsValid )
+						{
+							placedCount = n;
+							failedCount = 0;
+							upperOccFinal = exactMrt.upperOccupancy();
+							lowerOccFinal = exactMrt.lowerOccupancy();
+							fdivOccFinal = exactMrt.fdivOccupancy();
+							efuOccFinal = exactMrt.efuOccupancy();
+						}
+					}
+				}
 				if( failedCount == 0 ) break;
 				if( usePreciseRenamedRecMII
 				    && std::getenv( "OPENVCL_EXPERIMENT_FAILED_FIRST_RETRY" ) != NULL

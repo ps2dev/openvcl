@@ -136,6 +136,15 @@ placed node before an II bump. It is useful for comparing the greedy partial
 layout against a CSP witness and identifying whether a failure is genuinely
 local or requires coordinated movement across the loop.
 
+`OPENVCL_EXPERIMENT_EXACT_FEASIBILITY_PLACER=1` enables the same finite-domain
+solver in C++ for the precise rename-aware multi-Q kernel probe. It is an
+experimental fallback only: the normal greedy placer runs first, and when that
+fails the solver applies AC-3 + MRV/least-constraining-value search to the same
+finite domains and DDG/MRT model. `OPENVCL_EXACT_FEASIBILITY_MAX_STATES`
+overrides the default 200000-state safety cap. Each invocation emits a
+`[modulo-exact-placer]` line with `SAT`, `UNSAT`, or `UNKNOWN` plus state and
+revision counts. This flag does not enable production codegen by itself.
+
 Characterize those accepted no-Q rewrites against a completed baseline:
 
 ```sh

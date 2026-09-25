@@ -294,3 +294,16 @@ next scheduler experiment should therefore port the successful CSP ideas
 (propagation + bounded backtracking) into a generic C++ placer path, initially
 diagnostic, and compare II=38/35 candidates through the complete kernel rewrite
 and runtime validation rather than assuming the lowest model-only II is safe.
+
+That solver has now also been ported to C++ as `VuModuloFeasibilitySolver` and
+is available behind `OPENVCL_EXPERIMENT_EXACT_FEASIBILITY_PLACER=1` in the
+precise rename-aware multi-Q probe. On `indexed/xform_loop_lid` it independently
+reproduces the Python result exactly: **II=35, stageCount=3, conflicts=0, 49
+search states, 2304 AC-3 revisions**, with no II bumps. The implementation has
+unit coverage for ordinary DDG ordering, MRT collisions, and carried self
+edges. It remains diagnostic: the production generic rewrite currently builds
+its normal opportunity through the non-precise path, while this lower-II result
+belongs to the separate precise multi-Q probe. The next integration question is
+therefore not whether II<46 exists (it does), but how to promote a precise
+multi-Q layout into the real rewrite plan while preserving the complete
+prolog/drain and rename semantics.
