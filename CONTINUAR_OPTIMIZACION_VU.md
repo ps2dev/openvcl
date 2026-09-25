@@ -220,3 +220,17 @@ tenga un prolog/drain semántico separado que el layout genérico aún no
 represente. La suite host pasa completa. Estas restricciones no promueven una
 relajación de scheduling; mantienen el generic kernel rewrite experimental
 cerrado cuando no puede representar toda la semántica del plan.
+
+La siguiente exploración del orden del placer probó dos heurísticas generales
+sin tocar ninguna arista DDG ni regla MRT: priorizar nodos por presión de aristas
+carried y, separadamente, invertir el desempate entre nodos con igual
+height/mobility para favorecer sinks. La primera no encontró un layout factible
+dentro del cap del probe; la segunda conservó exactamente **II=46**. Se
+descartaron ambas del código. Con failed-first, a II=44 y 45 el único nodo que
+queda sin colocar es el `SQ` de la segunda salida (token 252): sus límites son
+los productores `FTOI4`/`MFIR` y el `IADDIU next_output` por las aristas
+dist=0/dist=1 demostradas. A II=46 el layout coloca `MFIR`, `SQ` e `IADDIU` en
+slots 68, 73 y 74 respectivamente. Por tanto el siguiente experimento debe
+trabajar sobre la **selección de slot legal** del placer (no solo el orden de
+nodos), manteniendo esas aristas intactas; en particular conviene comparar
+earliest-slot con una selección dirigida por slack/vecindad ya colocada.
