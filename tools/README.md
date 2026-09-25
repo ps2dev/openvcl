@@ -110,6 +110,32 @@ while preserving the relative priority of the remaining nodes. It never drops
 dependency edges or MRT constraints and remains diagnostic/experimental rather
 than a production scheduling rule.
 
+For a stronger placement diagnostic, `OPENVCL_DUMP_MODULO_FEASIBILITY_PROBLEM=1`
+prints the finite slot domains, precise DDG edges, pipe class, and reservation
+duration seen by every failed candidate II. Feed that stderr to the standalone
+binary-CSP solver:
+
+```sh
+OPENVCL_DUMP_MODULO_FEASIBILITY_PROBLEM=1 \
+./openvcl --disable-known-loop-optimizations input.vcl -o /tmp/input.vsm \
+  2> /tmp/modulo-problems.txt
+
+python3 tools/solve_vu_modulo_feasibility.py \
+  /tmp/modulo-problems.txt --loop xform_loop_lid --ii 38
+```
+
+The solver uses arc consistency (AC-3), minimum-remaining-values branching,
+least-constraining value ordering, and bounded backtracking. `SAT` proves that
+the dumped finite `[lo, hi]` domains contain a schedule satisfying the same DDG
+inequalities and MRT resource conflicts; `UNSAT` proves that they do not;
+`UNKNOWN` means `--max-states` was exhausted. This is still a scheduler-model
+diagnostic, not a semantic-equivalence proof of an emitted VU program.
+
+`OPENVCL_DUMP_LOOP_PARTIAL_LAYOUT=1` additionally dumps every successfully
+placed node before an II bump. It is useful for comparing the greedy partial
+layout against a CSP witness and identifying whether a failure is genuinely
+local or requires coordinated movement across the loop.
+
 Characterize those accepted no-Q rewrites against a completed baseline:
 
 ```sh

@@ -8329,6 +8329,42 @@ namespace
 				lowerOccFinal = mrt.lowerOccupancy();
 				fdivOccFinal  = mrt.fdivOccupancy();
 				efuOccFinal   = mrt.efuOccupancy();
+				if( failedCount > 0 && usePreciseRenamedRecMII
+				    && std::getenv( "OPENVCL_DUMP_MODULO_FEASIBILITY_PROBLEM" ) != NULL )
+				{
+					std::cerr << "[modulo-feasibility-problem] loop=" << opportunity.label
+					          << " II=" << tryII
+					          << " nodes=" << n
+					          << " edges=" << totalEdges
+					          << " scheduleLength=" << pr.scheduleLength << "\n";
+					for( unsigned int node = 0; node < n; ++node )
+					{
+						const unsigned int lo = pr.asap[node];
+						unsigned int hi = lo;
+						if( pipeOf[node] != 0 )
+						{
+							hi = pr.alap[node];
+							if( hi < lo ) hi = lo;
+							if( hi < pr.scheduleLength ) hi = pr.scheduleLength;
+							if( hi < lo + tryII ) hi = lo + tryII;
+						}
+						std::cerr << "[modulo-feasibility-node] loop=" << opportunity.label
+						          << " II=" << tryII
+						          << " node=" << node
+						          << " tokenIndex=" << mt[node]
+						          << " pipe=" << pipeOf[node]
+						          << " duration=" << durationOf[node]
+						          << " lo=" << lo
+						          << " hi=" << hi << "\n";
+					}
+					for( unsigned int edge = 0; edge < totalEdges; ++edge )
+						std::cerr << "[modulo-feasibility-edge] loop=" << opportunity.label
+						          << " II=" << tryII
+						          << " from=" << dFrom[edge]
+						          << " to=" << dTo[edge]
+						          << " dist=" << dDist[edge]
+						          << " lat=" << dLat[edge] << "\n";
+				}
 				if( failedCount == 0 ) break;
 				// Track 9.G step 4g: bounded backtracking. For each failed
 				// node f, try evicting a single already-placed node b that
@@ -8699,6 +8735,20 @@ namespace
 								}
 								std::cerr << "\n";
 						}
+					}
+				}
+				if( std::getenv( "OPENVCL_DUMP_LOOP_PARTIAL_LAYOUT" ) != NULL )
+				{
+					for( unsigned int node = 0; node < n; ++node )
+					{
+						if( !placed[node] ) continue;
+						std::cerr << "[loop-partial-layout] loop=" << opportunity.label
+						          << " II=" << tryII
+						          << " node=" << node
+						          << " tokenIndex=" << mt[node]
+						          << " slot=" << slotOf[node]
+						          << " modSlot=" << (slotOf[node] % tryII)
+						          << " pipe=" << pipeOf[node] << "\n";
 					}
 				}
 				++tryII; ++bumps;

@@ -264,3 +264,33 @@ placement accident confined to the immediate FTOI4/MFIR/IADDIU neighbourhood.
 Further work should inspect constraints/resource occupancy beyond one DDG hop,
 or use a bounded exact feasibility search, rather than adding more local greedy
 reordering.
+
+### 2026-09-25: exact finite-domain feasibility
+
+A diagnostic finite-domain solver now consumes the precise placement problem
+exported by `OPENVCL_DUMP_MODULO_FEASIBILITY_PROBLEM=1`. The problem is binary:
+each node has the placer's finite `[lo, hi]` slot domain; DDG edges impose
+`slot[to]-slot[from] >= latency-distance*II`; nodes sharing an MRT resource have
+pairwise modulo-slot/throughput exclusions. `tools/solve_vu_modulo_feasibility.py`
+enforces arc consistency (AC-3), selects the minimum remaining domain, orders
+values by least-constraining pressure, and performs bounded backtracking.
+
+The solver first reproduced a valid II=46 witness, then found **SAT at every II
+from 45 down through the precise renamed MII=35** for `xform_loop_lid`. The
+greedy II=46 result is therefore not a lower bound imposed by the current DDG
+or MRT model. At II=38 the exact witness is three-stage and requires coordinated
+movement across the loop: the greedy partial layout leaves node 60 unplaced,
+while the witness relocates many nodes rather than only the final
+FTOI4/MFIR/SQ/IADDIU neighbourhood. A dynamic MRV-only greedy experiment was
+also tried and discarded; without backtracking it reached dead ends and found
+no layout within the probe cap.
+
+The checked-in Sony VCL 1.4beta7 reference for the same loop reports
+`optimal=38` for both `ldumb` and `vuta`, and emits a 38-row MAIN loop. That is
+currently the strongest practical target: our simplified finite model can fit
+II=35, but Sony choosing 38 is evidence that full emission/pipeline constraints
+or optimization objectives not yet represented by the probe may matter. The
+next scheduler experiment should therefore port the successful CSP ideas
+(propagation + bounded backtracking) into a generic C++ placer path, initially
+diagnostic, and compare II=38/35 candidates through the complete kernel rewrite
+and runtime validation rather than assuming the lowest model-only II is safe.
