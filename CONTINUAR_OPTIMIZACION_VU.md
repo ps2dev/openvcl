@@ -251,3 +251,16 @@ No experimental code from these attempts is retained. The remaining useful
 direction is therefore bounded local repair/backtracking around the failed
 SQ/MFIR/IADDIU neighbourhood, rather than another global priority or slot-order
 heuristic; any such repair must continue to validate the complete DDG and MRT.
+
+The bounded local-repair follow-up was also tested diagnostically. For each
+failed node the placer copied the current MRT, released every pair of placed
+incident DDG neighbours, and tried all six orders of the failed node plus that
+pair while rechecking every DDG edge and MRT reservation. No pair repaired the
+indexed transform loop below II=46. The test was then widened to the complete
+three-neighbour incident set (24 deterministic permutations); that also found
+no valid repair at II=44 or II=45. The experimental implementation was removed.
+This is useful negative evidence: the final II=46 gap is not just a greedy
+placement accident confined to the immediate FTOI4/MFIR/IADDIU neighbourhood.
+Further work should inspect constraints/resource occupancy beyond one DDG hop,
+or use a bounded exact feasibility search, rather than adding more local greedy
+reordering.
