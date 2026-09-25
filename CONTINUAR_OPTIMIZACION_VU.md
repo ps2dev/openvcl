@@ -317,3 +317,18 @@ a scheduler-design reference: its checked-in result is 38 rows, while the
 simplified exact OpenVCL model can fit 35, so reverse engineering should focus
 on candidate generation/search and the full emission constraints rather than
 assuming Sony merely drops a dependency that OpenVCL keeps.
+
+Directed static analysis of the public Sony VCL 1.4beta7 x86 binary now maps
+the core loop driver around `Opt::Loop` and its candidate pipeline. The driver
+starts from a minimum loop size, applies the LoopExtra/LoopAbs bounds, builds a
+work table, tries several internal strategies (`ldumb`, `vuta`, `hDown`,
+`normal*`, etc.), and runs loop generation followed by stats, reduction,
+move/post-opt validation and register assignment. If no strategy produces a
+complete candidate, it increases the candidate loop size; once a size has a
+valid candidate it selects the best strategy for that size and finalizes it.
+This makes Sony's 38-row result consistent with OpenVCL's model-only II=35:
+35--37 can be DDG/MRT-feasible yet fail a later full-pipeline constraint. The
+detailed address/evidence map is in
+`reports/2026-09-25-sony-vcl-loop-re.md`. The next investigation should identify
+which full-pipeline phase first separates 35--37 from 38, then use that result
+to define the constraints and search policy of a generic global OpenVCL placer.
