@@ -184,6 +184,33 @@ has one stage, no PROLOG/DRAIN, no conflicts, and MAIN covers every expanded nod
 exactly once. That flag is only a structural promotion prerequisite, not a
 semantic-equivalence result.
 
+`OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION=1` is the next, still
+experimental, promotion step. It runs the bounded sweep, but for the expanded
+refit additionally constrains the original loop backedge to the lower lane of the
+final modulo cycle and requires a single-stage result. Only a conflict-free refit
+with no PROLOG/DRAIN and one-to-one MAIN coverage is emitted. The original branch
+is kept as the loop backedge; synthetic rename MOVEs stay on the lower pipe to
+match the expanded-DDG model. On `indexed/xform_loop_lid` this changes the best
+direct candidate found under the bounded search from the unconstrained 37->38
+diagnostic result to **37->39**. The branch-aware II=38 search for source II=37
+is `UNKNOWN` at both 5000 and 200000 states, not `UNSAT`; do not interpret 39 as
+a proved minimum.
+The flag is not enabled by default.
+
+Validate that direct path with the extracted indexed transform-loop differential:
+
+```sh
+make -C test/ps2/vu1_generic_kernel_rewrite_differential
+python3 test/ps2/vu1_differential/run_pcsx2.py \
+  --elf test/ps2/vu1_generic_kernel_rewrite_differential/vu1_generic_kernel_rewrite_differential.elf
+```
+
+The expected marker is
+`VU1_DIFFERENTIAL_PASS generic-kernel-direct rows=12 index=18 output=236`.
+The fixture compares the candidate and conservative baseline bit-for-bit over 12
+output qwords and the final loop pointers; it does not by itself validate every
+possible input/trip count or establish a PS2 performance measurement.
+
 Characterize those accepted no-Q rewrites against a completed baseline:
 
 ```sh

@@ -4297,6 +4297,105 @@ TEST_CASE("VuSchedulerAnalysis: generic kernel rewrite leaves tokens unchanged w
     CHECK(output.size() == program.tokenizer.tokens().size());
 }
 
+TEST_CASE("VuSchedulerAnalysis: direct self-contained refit preserves original loop branch")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("iaddiu vi02, vi02, 1"));
+    REQUIRE(program.parse("ibne vi02, vi03, loop_lid"));
+    REQUIRE(program.parse("done_lid:"));
+
+    vcl::VuSoftwarePipelineRewritePlan plan;
+    plan.label = "loop_lid";
+    plan.labelTokenIndex = 0u;
+    plan.branchTokenIndex = 2u;
+    plan.directSelfContainedRefit = true;
+    plan.directSelfContainedSourceII = 1u;
+    plan.kernelRewriteRefitII = 1u;
+    plan.kernelRewriteRefitStageCount = 1u;
+    plan.kernelRewriteRefitConflicts = 0u;
+    vcl::VuKernelRefitNode node;
+    node.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+    node.sourceTokenIndex = 1u;
+    plan.kernelRewriteRefitNodes.push_back(node);
+    vcl::VuKernelRefitNode branchNode;
+    branchNode.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+    branchNode.sourceTokenIndex = 2u;
+    plan.kernelRewriteRefitNodes.push_back(branchNode);
+    plan.kernelRewriteRefitMainTokens.assign(4u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitMainTokens[0] = 0u;
+    plan.kernelRewriteRefitMainTokens[1] = 1u;
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans(1u, plan);
+    std::vector<vcl::VuKernelBlockRange> ranges;
+    std::list<vcl::Token> output =
+        vcl::applyVuGenericKernelRewritePlans(program.tokenizer.tokens(), plans, ranges);
+
+    REQUIRE(ranges.size() == 1u);
+    CHECK(ranges[0].mainLabel == "loop_lid");
+    CHECK(ranges[0].endLabel == "loop_lid__DIRECT_END");
+    CHECK(ranges[0].II == 1u);
+    CHECK(ranges[0].refitNodes.size() == 1u);
+    CHECK(ranges[0].refitMainTokens[1] == vcl::VuKernelRefitNode::NO_INDEX);
+
+    std::vector<std::string> labels;
+    std::vector<std::string> branchTargets;
+    for (std::list<vcl::Token>::const_iterator t = output.begin(); t != output.end(); ++t) {
+        if (!t->label().empty()) labels.push_back(t->label());
+        for (std::list<vcl::Token::Argument>::const_iterator a = t->arguments().begin();
+             a != t->arguments().end(); ++a) {
+            if ((a->flags() & vcl::Token::Argument::BRANCH)
+                && a->type() == vcl::Token::Argument::IMMEDIATE)
+                branchTargets.push_back(a->immediate());
+        }
+    }
+    REQUIRE(labels.size() == 3u);
+    CHECK(labels[0] == "loop_lid");
+    CHECK(labels[1] == "loop_lid__DIRECT_END");
+    CHECK(labels[2] == "done_lid");
+    REQUIRE(branchTargets.size() == 1u);
+    CHECK(branchTargets[0] == "loop_lid");
+}
+
+TEST_CASE("VuSchedulerAnalysis: direct refit rejects a backedge before the final lower cell")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("iaddiu vi02, vi02, 1"));
+    REQUIRE(program.parse("ibne vi02, vi03, loop_lid"));
+    REQUIRE(program.parse("done_lid:"));
+
+    vcl::VuSoftwarePipelineRewritePlan plan;
+    plan.label = "loop_lid";
+    plan.labelTokenIndex = 0u;
+    plan.branchTokenIndex = 2u;
+    plan.directSelfContainedRefit = true;
+    plan.kernelRewriteRefitII = 2u;
+    plan.kernelRewriteRefitStageCount = 1u;
+
+    vcl::VuKernelRefitNode body;
+    body.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+    body.sourceTokenIndex = 1u;
+    plan.kernelRewriteRefitNodes.push_back(body);
+    vcl::VuKernelRefitNode branch;
+    branch.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+    branch.sourceTokenIndex = 2u;
+    plan.kernelRewriteRefitNodes.push_back(branch);
+
+    plan.kernelRewriteRefitMainTokens.assign(8u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitMainTokens[0] = 0u;
+    plan.kernelRewriteRefitMainTokens[1] = 1u; // cycle 0 lower, not cycle 1 lower
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans(1u, plan);
+    std::vector<vcl::VuKernelBlockRange> ranges;
+    const std::list<vcl::Token> output =
+        vcl::applyVuGenericKernelRewritePlans(program.tokenizer.tokens(), plans, ranges);
+    CHECK(ranges.empty());
+    CHECK(output.size() == program.tokenizer.tokens().size());
+}
+
 // Track 9.G step 6e: VuKernelRewritePlan scaffolding fields default to zero/empty.
 TEST_CASE("VuSchedulerAnalysis: kernel-rewrite scaffolding defaults are zero/empty")
 {
@@ -4308,6 +4407,8 @@ TEST_CASE("VuSchedulerAnalysis: kernel-rewrite scaffolding defaults are zero/emp
     CHECK(opp.kernelRewriteMainTokens.empty());
     CHECK(opp.kernelRewriteDrainTokens.empty());
     CHECK(opp.kernelRewriteEntryStages.empty());
+    CHECK(!opp.kernelRewriteExactCandidateSelected);
+    CHECK(opp.kernelRewriteExactCandidateSourceII == 0u);
 
     vcl::VuSoftwarePipelineRewritePlan plan;
     CHECK(plan.kernelRewriteII == 0u);
@@ -4317,6 +4418,8 @@ TEST_CASE("VuSchedulerAnalysis: kernel-rewrite scaffolding defaults are zero/emp
     CHECK(plan.kernelRewriteMainTokens.empty());
     CHECK(plan.kernelRewriteDrainTokens.empty());
     CHECK(plan.kernelRewriteEntryStages.empty());
+    CHECK(!plan.directSelfContainedRefit);
+    CHECK(plan.directSelfContainedSourceII == 0u);
 }
 
 // Track 9.G step 6f: register-rewrite scaffolding fields default to zero/empty.

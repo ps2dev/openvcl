@@ -2,6 +2,7 @@
 """Run the VU1 differential ELF in PCSX2 and return its semantic result."""
 
 import argparse
+import os
 from pathlib import Path
 import selectors
 import shutil
@@ -129,8 +130,7 @@ def run_pcsx2(pcsx2: Path, pcsx2_data: Path, elf: Path, timeout: float) -> int:
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            bufsize=0,
         )
         assert process.stdout is not None
 
@@ -138,23 +138,29 @@ def run_pcsx2(pcsx2: Path, pcsx2_data: Path, elf: Path, timeout: float) -> int:
         selector.register(process.stdout, selectors.EVENT_READ)
         deadline = time.monotonic() + timeout
         result = None
+        pass_marker = PASS_MARKER.encode()
+        fail_marker = FAIL_MARKER.encode()
+        marker_tail = b""
+        marker_overlap = max(len(pass_marker), len(fail_marker)) - 1
 
         try:
             while time.monotonic() < deadline:
                 remaining = max(0.0, deadline - time.monotonic())
                 events = selector.select(min(0.25, remaining))
                 for key, _ in events:
-                    line = key.fileobj.readline()
-                    if not line:
+                    chunk = os.read(key.fileobj.fileno(), 65536)
+                    if not chunk:
                         continue
-                    sys.stdout.write(line)
-                    sys.stdout.flush()
-                    if FAIL_MARKER in line:
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.buffer.flush()
+                    marker_data = marker_tail + chunk
+                    if fail_marker in marker_data:
                         result = 1
                         break
-                    if PASS_MARKER in line:
+                    if pass_marker in marker_data:
                         result = 0
                         break
+                    marker_tail = marker_data[-marker_overlap:] if marker_overlap else b""
                 if result is not None or process.poll() is not None:
                     break
         finally:

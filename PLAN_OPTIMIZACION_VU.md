@@ -364,6 +364,29 @@ codegen predeterminado hasta que exista una mejora general validada.
 	   exactamente una vez. `indexed/xform_loop_lid` 37->38 cumple esa condición:
 	   68 nodos, MAIN=38*4 celdas, PROLOG=0 y DRAIN=0. Es una condición necesaria
 	   para una futura emisión directa del MAIN, no una prueba semántica.
+	9. La primera promoción experimental del MAIN autocontenido ha revelado una
+	   restricción de control que el refit diagnóstico no modelaba: el backedge no
+	   puede quedar en cualquier slot lower, debe ocupar el lower del último ciclo
+	   del kernel que se emite directamente. Sin esa restricción, el 37->38 coloca
+	   el branch en el ciclo 31/38 y no es directamente representable. El solver
+	   exacto admite ahora fijar genéricamente un token tail; con el branch fijado y
+	   el refit limitado a una etapa, `indexed/xform_loop_lid` pasa a 35->41,
+	   36->41, **37->39**, 38->40 y selecciona 37->39, con el branch en ciclo 38
+	   lane lower. El intento branch-aware de II=38 para el source 37 agota tanto
+	   5000 como 200000 estados (`UNKNOWN`, no `UNSAT`), por lo que 39 es el mejor
+	   resultado encontrado bajo el presupuesto actual, no una prueba de mínimo.
+	   La ruta `OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION=1`
+	   emite ese MAIN sólo cuando el refit es autocontenido y el branch satisface
+	   esa posición final. El fixture PCSX2
+	   `vu1_generic_kernel_rewrite_differential` conserva el cuerpo real del loop y
+	   compara 12 qwords de salida más los punteros finales: candidato y baseline
+	   son bit-identical (`next_index=18`, `next_output=236`). El VSM experimental
+	   reduce `.vutext` de 3440 a 2752 bytes y el modelo estático del bloque caliente
+	   baja de 139 a 41 ciclos estimados por repetición; estas cifras no sustituyen
+	   una medición de rendimiento en hardware real. El comportamiento
+	   normal sigue sin cambios: `direct-refit-default-001` completa los 13
+	   renderers y sus 52 VSM, costes y tamaños son idénticos a
+	   `refit-envelope-001`.
 
 **Punto de decisión:** si existe `SAT` por debajo del II greedy, mejorar el
 algoritmo de placement usando el witness y la comparación con Sony. Si todos

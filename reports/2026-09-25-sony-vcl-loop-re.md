@@ -227,3 +227,27 @@ grid, while the refit's PROLOG and DRAIN grids are empty. This does not prove
 semantic equivalence, but it means the next promotion experiment need not first
 invent a multi-stage refit envelope for this case; it can test a direct MAIN
 replacement while preserving the original branch/control semantics.
+
+That direct-emission experiment has now shown that the unconstrained 38-row
+result did **not** yet preserve all control-flow placement requirements. Its
+backedge lands at cycle 31 in the lower lane, rather than terminating the cyclic
+kernel. Once OpenVCL constrains the original branch to the final lower cell and
+requires a one-stage expanded refit, the candidate sequence becomes 35 -> 41,
+36 -> 41, **37 -> 39**, 38 -> 40. The 37-source candidate remains best, but the
+best directly representable OpenVCL kernel found by the bounded search is
+therefore 39 rows rather than 38. The branch-aware II=38 search for source II=37
+is still `UNKNOWN` after 200000 states (rather than proven `UNSAT`), so the
+current experiment has not established that a legal 38-row placement is
+impossible. This
+narrows the Sony question: its 38-row MAIN either represents control flow
+differently, folds the branch/delay semantics into a different accounting model,
+or satisfies a constraint that OpenVCL currently encodes more conservatively.
+The current evidence does not distinguish those possibilities.
+
+The branch-aware 37 -> 39 route is implemented only behind
+`OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION=1`. A focused PCSX2 differential
+using the extracted `xform_loop_lid` body validates the emitted candidate against
+the conservative OpenVCL baseline: 12 output qwords and the final index/output
+pointers are bit-identical. The normal compiler path remains byte-identical over
+the 52 VSM corpus in `direct-refit-default-001`, so this runtime result does not
+yet constitute a production/default promotion.

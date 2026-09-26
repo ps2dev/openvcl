@@ -1039,7 +1039,8 @@ bool CodeGenerator::beginProcess(const std::list<Token>& tokens)
 			// passing isVuPlanEligibleForGenericKernelRewrite are
 			// rewritten by the new emitter; ineligible plans remain
 			// the responsibility of applyVuSoftwarePipelinePlans below.
-			if( std::getenv("OPENVCL_USE_GENERIC_KERNEL_REWRITE") != NULL )
+			if( std::getenv("OPENVCL_USE_GENERIC_KERNEL_REWRITE") != NULL
+			    || std::getenv("OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION") != NULL )
 			{
 				// 9.G-1h-4a-2: capture MAIN-body ranges out-of-band
 				// for the 4a-3 scheduler-bypass consumer.

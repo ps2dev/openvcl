@@ -455,6 +455,8 @@ struct VuLoopPipelineOpportunity
 	std::vector<unsigned int>      kernelRewriteRefitPrologTokens;
 	std::vector<unsigned int>      kernelRewriteRefitMainTokens;
 	std::vector<unsigned int>      kernelRewriteRefitDrainTokens;
+	bool kernelRewriteExactCandidateSelected;
+	unsigned int kernelRewriteExactCandidateSourceII;
 };
 
 // True when an expanded-DDG refit represents one complete loop iteration in a
@@ -574,6 +576,8 @@ struct VuSoftwarePipelineRewritePlan
 	std::vector<unsigned int>      kernelRewriteRefitPrologTokens;
 	std::vector<unsigned int>      kernelRewriteRefitMainTokens;
 	std::vector<unsigned int>      kernelRewriteRefitDrainTokens;
+	bool directSelfContainedRefit;
+	unsigned int directSelfContainedSourceII;
 };
 
 std::vector<VuBasicBlock> buildVuBasicBlocks( const std::list<Token>& tokens );

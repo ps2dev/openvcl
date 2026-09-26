@@ -387,3 +387,43 @@ coverage of every expanded node by the MAIN grid. The selected
 grid, with zero refit PROLOG/DRAIN cells. This suggests a future direct-MAIN
 experimental emitter can be smaller than the earlier multi-stage envelope path,
 but no codegen route consumes this classification yet.
+
+The first direct-MAIN experiment exposed one missing control-flow constraint in
+that result. The unconstrained 37->38 refit places the loop backedge at cycle 31,
+lower lane; a direct cyclic kernel cannot emit that as-is because the backedge
+must terminate the steady-state body. The exact placer now has a generic optional
+tail-token domain constraint, and the direct experiment requires the branch in
+the final lower cell while limiting the expanded refit to one stage. Under that
+constraint the four source candidates become **35->41, 36->41, 37->39, 38->40**,
+so the best directly emit-able candidate found within the bounded search is
+**37->39**. The branch-aware II=38 refit for source II=37 remains `UNKNOWN` after
+both 5000 and 200000 search states (1,895,345 AC-3 revisions at the latter
+budget), not `UNSAT`; 39 is therefore not yet a proven lower bound. This is evidence that the
+earlier 38-row match with Sony was missing at least one control-flow constraint;
+it does not imply that Sony pays the same extra row, because its loop/control
+encoding may differ.
+
+`OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION=1` now promotes only such a
+branch-tail, single-stage, conflict-free refit. It reconstructs the expanded
+rename nodes, reserves the final lower slot for the original backedge, and keeps
+synthetic rename MOVEs on the lower pipe (`PREORDERED`) so codegen cannot silently
+turn them into upper-pipe MAX instructions. The resulting real indexed VSM
+assembles; its `.vutext` is 2752 bytes versus 3440 for the current default indexed
+output. A permanent PCSX2 differential using the real `xform_loop_lid` body
+(`test/ps2/vu1_generic_kernel_rewrite_differential`) reports
+`VU1_DIFFERENTIAL_PASS generic-kernel-direct rows=12 index=18 output=236`: the
+candidate and conservative baseline match bit-for-bit over all 12 output qwords
+and final loop pointers. The default path remains isolated: the fresh
+`direct-refit-default-001` 13-renderer baseline has no failures and all 52 VSM,
+static-cost metrics and `.vutext` sizes are identical to `refit-envelope-001`.
+For the indexed program itself, the experimental VSM shrinks `.vutext` from 3440
+to 2752 bytes; the static cost model reports 41 estimated cycles per repeated
+`xform_loop_lid` block versus 139 for the current default. These remain model and
+size results, not PS2 hardware timing measurements.
+
+The shared PCSX2 differential runner also now consumes the emulator's stdout as
+unbuffered bytes. The previous `selectors` + `TextIO.readline()` combination could
+read ahead several lines and then miss a PASS/FAIL marker left in Python's text
+buffer after the fd stopped being readable. The byte-stream reader preserves
+marker detection across chunk boundaries and the generic-kernel fixture now
+returns success directly rather than requiring manual log inspection.
