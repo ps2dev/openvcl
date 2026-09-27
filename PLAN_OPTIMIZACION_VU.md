@@ -375,16 +375,30 @@ codegen predeterminado hasta que exista una mejora general validada.
 	    `scratch -> base` sólo antes de la siguiente lectura que realmente lo necesita,
 	    preservando correctamente los live-ins. El fixture real de `xform_loop_lid`
 	    valida 6 casos, entre 1 y 8 iteraciones, distintos pares de índices, hasta 48
-	    qwords de salida y los punteros finales, bit a bit contra el baseline.
-	    La baseline fresca `corrected-refit-final-014` completa los 13 renderers y las
+	    qwords de salida y los punteros finales, bit a bit contra el baseline. La
+	    baseline fresca `corrected-refit-final-014` completa los 13 renderers y las
 	    cuatro variantes sin fallos: sus 52 VSM, `vutext-bytes.json` y métricas de
 	    coste son idénticos a `direct-refit-default-001`, confirmando que estas
 	    correcciones siguen aisladas del path por defecto.
-	11. El siguiente milestone de optimización vuelve a ser el envelope completo de
-	    dos etapas: transportar y emitir correctamente el PROLOG/MAIN/DRAIN del
-	    candidato 37->44 antes de discutir cualquier promoción. La emisión directa
-	    de una etapa queda como prueba de infraestructura y semántica, no como objetivo
-	    de rendimiento.
+	11. El primer transporte completo del envelope de dos etapas queda deliberadamente
+	    bloqueado antes de emisión por el plan de registros del refit final. El 37->44
+	    estructural tiene 117 rename hints y seis familias VF finales; sólo cuatro de
+	    sus seis decisiones encuentran scratch después de las tres renombradas de la
+	    primera capa. Un sweep diagnóstico nuevo sobre los subconjuntos de esas tres
+	    decisiones demuestra que el doble renombrado es contraproducente: con ninguna
+	    decisión source el primer refit llega a II=35 y sus cinco decisiones finales
+	    sí son asignables, pero reaplicar esas cinco decisiones con la lógica actual
+	    `dirty/materialize` y volver a refittear sube a II=49 y vuelve a producir siete
+	    decisiones, de las que sólo dos son asignables. Por tanto el siguiente paso no
+	    es otra capa recursiva de scratch->base ni relajar el gate de seguridad, sino
+	    diseñar modulo variable expansion/rotación stage-aware que represente los
+	    valores simultáneos de iteraciones solapadas de forma nativa. El scaffolding
+	    PROLOG/MAIN/DRAIN puede permanecer opt-in, pero ningún VSM real debe usarlo
+	    mientras `kernelRewriteRefitRenameHintCount != 0`. La baseline Release
+	    `two-stage-refit-safety-003` completa los 13 renderers y las cuatro variantes
+	    sin fallos: los 52 VSM, las métricas de coste y `vutext-bytes.json` son
+	    idénticos a `corrected-refit-final-014`, confirmando que este scaffolding
+	    permanece aislado del codegen por defecto.
 
 **Punto de decisión:** si existe `SAT` por debajo del II greedy, mejorar el
 algoritmo de placement usando el witness y la comparación con Sony. Si todos

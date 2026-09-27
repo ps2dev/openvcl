@@ -411,10 +411,31 @@ cost metrics and `.vutext` byte counts are identical to `direct-refit-default-00
 Therefore the semantic fixes and broader differential remain isolated from the
 default compiler output.
 
-The next scheduler milestone is therefore the complete **two-stage refit
-envelope** for the corrected source-37 -> refit-44 candidate: reconstruct and
-emit its PROLOG/MAIN/DRAIN semantics, then validate it independently. Do not try
-to promote the single-stage direct-MAIN experiment as a performance path.
+The two-stage refit envelope transport is now present as opt-in scaffolding, but
+the real corrected source-37 -> refit-44 candidate correctly remains blocked
+before emission. Its final layout has 117 cross-stage rename hints over six VF
+families; after the three source-level rename decisions consume VF31/VF30/VF29,
+only four of the six final rename decisions can obtain scratch registers.
+
+A new diagnostic source-rename subset sweep shows that recursively stacking the
+existing scratch/materialize transformation is the wrong model. With all three
+source decisions removed, the first shadow refit reaches II=35 and needs five
+final rename decisions, all assignable. Reapplying those five decisions directly
+to the original semantic stream and refitting again does not close the problem:
+it grows to II=49 and produces seven new decisions, only two assignable. Other
+subsets show the same pattern. Therefore do **not** relax the final-rename gate
+and do not add another recursive rename layer.
+
+The next scheduler milestone is a generic modulo-variable-expansion / stage-aware
+rotation model for the final two-stage layout. It must represent simultaneous
+values from overlapped iterations natively, then feed a fresh exact refit and a
+runtime differential. The dormant PROLOG/MAIN/DRAIN emitter may be reused once
+that register plan reports zero unresolved cross-stage hazards. The reproducible
+probe is `test/ps2/vu1_two_stage_refit_probe`. A fresh Release corpus validation
+(`two-stage-refit-safety-003`) is complete with no failures: all 52 VSM outputs,
+static-cost metrics and `.vutext` byte counts are identical to
+`corrected-refit-final-014`, so the guarded scaffolding remains isolated from the
+default compiler path.
 
 The shared PCSX2 differential runner also now consumes the emulator's stdout as
 unbuffered bytes. The previous `selectors` + `TextIO.readline()` combination could

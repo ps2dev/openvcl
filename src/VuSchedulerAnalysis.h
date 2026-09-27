@@ -447,6 +447,20 @@ struct VuLoopPipelineOpportunity
 	unsigned int kernelRewriteRefitStageCount;
 	unsigned int kernelRewriteRefitConflicts;
 	unsigned int kernelRewriteRefitMainTokenCount;
+	// Cross-stage register hazards discovered on the FINAL expanded-DDG refit.
+	// A multi-stage envelope is not emission-safe while this is non-zero: the
+	// first-level source rename does not automatically cover stage assignments
+	// introduced by the refit itself.
+	unsigned int kernelRewriteRefitRenameHintCount;
+	// Diagnostic summary of the FINAL refit's rename allocation. These counts
+	// survive after the shadow layout is destroyed and are useful when comparing
+	// alternative first-level rename sets without publishing shadow entry indices.
+	unsigned int kernelRewriteRefitRenameDecisionCount;
+	unsigned int kernelRewriteRefitAssignedRenameDecisionCount;
+	// Stable part of the shadow refit's rename plan. Unlike rename hints, these
+	// decisions contain only architectural register names/scratch assignments and
+	// can be reapplied to the original semantic token stream for a closure probe.
+	std::vector<VuKernelRenameDecision> kernelRewriteRefitRenameDecisions;
 
 	// Track 9.G-1h step 4b-7a — published refit-grid + node descriptors.
 	// kernelRewriteRefitNodes is the ordered expanded-node sequence the
@@ -471,6 +485,12 @@ struct VuLoopPipelineOpportunity
 // expanded node exactly once. This is a structural prerequisite for a future
 // direct-main promotion path, not a semantic-equivalence proof.
 bool isVuKernelRefitSelfContained( const VuLoopPipelineOpportunity& opportunity );
+
+// True when an expanded-DDG refit forms a complete two-stage software-pipeline
+// envelope: MAIN covers every expanded node once, PROLOG/DRAIN partition those
+// nodes by stage, and the loop branch belongs to the launch stage (PROLOG) rather
+// than the draining stage. This is still only a structural emission prerequisite.
+bool isVuKernelTwoStageRefitEnvelope( const VuLoopPipelineOpportunity& opportunity );
 
 struct VuSoftwarePipelineRewritePlan
 {
@@ -573,6 +593,10 @@ struct VuSoftwarePipelineRewritePlan
 	unsigned int kernelRewriteRefitStageCount;
 	unsigned int kernelRewriteRefitConflicts;
 	unsigned int kernelRewriteRefitMainTokenCount;
+	unsigned int kernelRewriteRefitRenameHintCount;
+	unsigned int kernelRewriteRefitRenameDecisionCount;
+	unsigned int kernelRewriteRefitAssignedRenameDecisionCount;
+	std::vector<VuKernelRenameDecision> kernelRewriteRefitRenameDecisions;
 
 	// Track 9.G-1h step 4b-7a — mirror of opportunity-side refit-grid
 	// + node descriptors, copied through by
@@ -585,6 +609,8 @@ struct VuSoftwarePipelineRewritePlan
 	std::vector<unsigned int>      kernelRewriteRefitDrainTokens;
 	bool directSelfContainedRefit;
 	unsigned int directSelfContainedSourceII;
+	bool twoStageRefitEnvelope;
+	unsigned int twoStageRefitSourceII;
 };
 
 std::vector<VuBasicBlock> buildVuBasicBlocks( const std::list<Token>& tokens );
@@ -675,9 +701,18 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 // any subsequent token-list mutation.
 struct VuKernelBlockRange
 {
+	VuKernelBlockRange()
+		: II( 0 ), hasClosingBranch( true ), forceRefitGrid( false ) {}
+
 	std::string mainLabel;
 	std::string endLabel;
 	unsigned int II;
+	// MAIN ranges historically end with a synthetic back-edge branch. Full
+	// refit-envelope experiments also publish branchless PROLOG/DRAIN ranges.
+	bool hasClosingBranch;
+	// Force the refit grid even when every descriptor is PASSTHROUGH. This is
+	// required for envelope rows whose exact cycle placement is the experiment.
+	bool forceRefitGrid;
 	std::vector<unsigned int> placerGridMainTokens;
 
 	// Track 9.G-1h step 4b-7a — refit-grid + node descriptors, copied

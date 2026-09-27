@@ -4396,6 +4396,104 @@ TEST_CASE("VuSchedulerAnalysis: direct refit rejects a backedge before the final
     CHECK(output.size() == program.tokenizer.tokens().size());
 }
 
+TEST_CASE("VuSchedulerAnalysis: two-stage refit emits prolog main and drain control envelope")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("iaddiu vi02, vi02, 1"));
+    REQUIRE(program.parse("add.xy vf01, vf02, vf03"));
+    REQUIRE(program.parse("ibne vi02, vi03, loop_lid"));
+    REQUIRE(program.parse("done_lid:"));
+
+    vcl::VuSoftwarePipelineRewritePlan plan;
+    plan.label = "loop_lid";
+    plan.labelTokenIndex = 0u;
+    plan.branchTokenIndex = 3u;
+    plan.twoStageRefitEnvelope = true;
+    plan.twoStageRefitSourceII = 2u;
+    plan.kernelRewriteRefitII = 2u;
+    plan.kernelRewriteRefitStageCount = 2u;
+    plan.kernelRewriteRefitConflicts = 0u;
+
+    vcl::VuKernelRefitNode stage0;
+    stage0.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+    stage0.sourceTokenIndex = 1u;
+    plan.kernelRewriteRefitNodes.push_back(stage0);
+    vcl::VuKernelRefitNode stage1;
+    stage1.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+    stage1.sourceTokenIndex = 2u;
+    plan.kernelRewriteRefitNodes.push_back(stage1);
+    vcl::VuKernelRefitNode branch;
+    branch.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+    branch.sourceTokenIndex = 3u;
+    plan.kernelRewriteRefitNodes.push_back(branch);
+
+    plan.kernelRewriteRefitMainTokens.assign(8u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitPrologTokens.assign(8u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitDrainTokens.assign(8u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitMainTokens[1] = 0u;
+    plan.kernelRewriteRefitMainTokens[4] = 1u;
+    plan.kernelRewriteRefitMainTokens[5] = 2u;
+    plan.kernelRewriteRefitPrologTokens[1] = 0u;
+    plan.kernelRewriteRefitPrologTokens[5] = 2u;
+    plan.kernelRewriteRefitDrainTokens[4] = 1u;
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans(1u, plan);
+    std::vector<vcl::VuKernelBlockRange> ranges;
+    const std::list<vcl::Token> output =
+        vcl::applyVuGenericKernelRewritePlans(program.tokenizer.tokens(), plans, ranges);
+
+    REQUIRE(ranges.size() == 3u);
+    CHECK(ranges[0].mainLabel == "loop_lid");
+    CHECK(ranges[0].endLabel == "loop_lid__REFIT_PROLOG_END");
+    CHECK(!ranges[0].hasClosingBranch);
+    CHECK(ranges[0].forceRefitGrid);
+    CHECK(ranges[1].mainLabel == "loop_lid__REFIT_MAIN");
+    CHECK(ranges[1].endLabel == "loop_lid__REFIT_MAIN_END");
+    CHECK(ranges[1].hasClosingBranch);
+    CHECK(ranges[1].forceRefitGrid);
+    CHECK(ranges[2].mainLabel == "loop_lid__REFIT_DRAIN");
+    CHECK(ranges[2].endLabel == "loop_lid__REFIT_DRAIN_END");
+    CHECK(!ranges[2].hasClosingBranch);
+    CHECK(ranges[2].forceRefitGrid);
+
+    std::vector<std::string> labels;
+    std::vector<std::string> branchTargets;
+    unsigned int delayNops = 0u;
+    for (std::list<vcl::Token>::const_iterator t = output.begin(); t != output.end(); ++t) {
+        if (!t->label().empty()) labels.push_back(t->label());
+        if (t->flags() & vcl::Token::BRANCH_DELAY_FILLER) ++delayNops;
+        for (std::list<vcl::Token::Argument>::const_iterator a = t->arguments().begin();
+             a != t->arguments().end(); ++a) {
+            if ((a->flags() & vcl::Token::Argument::BRANCH)
+                && a->type() == vcl::Token::Argument::IMMEDIATE)
+                branchTargets.push_back(a->immediate());
+        }
+    }
+    CHECK(delayNops >= 1u);
+    REQUIRE(branchTargets.size() == 2u);
+    CHECK(branchTargets[0] == "loop_lid__REFIT_DRAIN");
+    CHECK(branchTargets[1] == "loop_lid__REFIT_MAIN");
+    REQUIRE(labels.size() == 7u);
+    CHECK(labels[0] == "loop_lid");
+    CHECK(labels[1] == "loop_lid__REFIT_PROLOG_END");
+    CHECK(labels[2] == "loop_lid__REFIT_MAIN");
+    CHECK(labels[3] == "loop_lid__REFIT_MAIN_END");
+    CHECK(labels[4] == "loop_lid__REFIT_DRAIN");
+    CHECK(labels[5] == "loop_lid__REFIT_DRAIN_END");
+    CHECK(labels[6] == "done_lid");
+
+    vcl::VuSoftwarePipelineRewritePlan unsafe = plan;
+    unsafe.kernelRewriteRefitRenameHintCount = 1u;
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> unsafePlans(1u, unsafe);
+    ranges.clear();
+    const std::list<vcl::Token> rejected =
+        vcl::applyVuGenericKernelRewritePlans(program.tokenizer.tokens(), unsafePlans, ranges);
+    CHECK(ranges.empty());
+    CHECK(rejected.size() == program.tokenizer.tokens().size());
+}
+
 // Track 9.G step 6e: VuKernelRewritePlan scaffolding fields default to zero/empty.
 TEST_CASE("VuSchedulerAnalysis: kernel-rewrite scaffolding defaults are zero/empty")
 {
@@ -4407,6 +4505,10 @@ TEST_CASE("VuSchedulerAnalysis: kernel-rewrite scaffolding defaults are zero/emp
     CHECK(opp.kernelRewriteMainTokens.empty());
     CHECK(opp.kernelRewriteDrainTokens.empty());
     CHECK(opp.kernelRewriteEntryStages.empty());
+    CHECK(opp.kernelRewriteRefitRenameHintCount == 0u);
+    CHECK(opp.kernelRewriteRefitRenameDecisionCount == 0u);
+    CHECK(opp.kernelRewriteRefitAssignedRenameDecisionCount == 0u);
+    CHECK(opp.kernelRewriteRefitRenameDecisions.empty());
     CHECK(!opp.kernelRewriteExactCandidateSelected);
     CHECK(opp.kernelRewriteExactCandidateSourceII == 0u);
 
@@ -4418,8 +4520,14 @@ TEST_CASE("VuSchedulerAnalysis: kernel-rewrite scaffolding defaults are zero/emp
     CHECK(plan.kernelRewriteMainTokens.empty());
     CHECK(plan.kernelRewriteDrainTokens.empty());
     CHECK(plan.kernelRewriteEntryStages.empty());
+    CHECK(plan.kernelRewriteRefitRenameHintCount == 0u);
+    CHECK(plan.kernelRewriteRefitRenameDecisionCount == 0u);
+    CHECK(plan.kernelRewriteRefitAssignedRenameDecisionCount == 0u);
+    CHECK(plan.kernelRewriteRefitRenameDecisions.empty());
     CHECK(!plan.directSelfContainedRefit);
     CHECK(plan.directSelfContainedSourceII == 0u);
+    CHECK(!plan.twoStageRefitEnvelope);
+    CHECK(plan.twoStageRefitSourceII == 0u);
 }
 
 // Track 9.G step 6f: register-rewrite scaffolding fields default to zero/empty.
@@ -5183,6 +5291,44 @@ TEST_CASE("VuSchedulerAnalysis: single-stage refit envelope must cover every exp
 
     opportunity.kernelRewriteRefitStageCount = 2u;
     CHECK(!vcl::isVuKernelRefitSelfContained(opportunity));
+}
+
+TEST_CASE("VuSchedulerAnalysis: two-stage refit envelope partitions launch and drain stages")
+{
+    vcl::VuLoopPipelineOpportunity opportunity;
+    opportunity.branchTokenIndex = 30u;
+    opportunity.kernelRewriteRefitII = 2u;
+    opportunity.kernelRewriteRefitStageCount = 2u;
+    opportunity.kernelRewriteRefitConflicts = 0u;
+    opportunity.kernelRewriteRefitNodes.resize(3u);
+    opportunity.kernelRewriteRefitNodes[0].sourceTokenIndex = 10u;
+    opportunity.kernelRewriteRefitNodes[1].sourceTokenIndex = 20u;
+    opportunity.kernelRewriteRefitNodes[2].sourceTokenIndex = 30u;
+    opportunity.kernelRewriteRefitMainTokens.assign(8u, vcl::VuKernelRefitNode::NO_INDEX);
+    opportunity.kernelRewriteRefitPrologTokens.assign(8u, vcl::VuKernelRefitNode::NO_INDEX);
+    opportunity.kernelRewriteRefitDrainTokens.assign(8u, vcl::VuKernelRefitNode::NO_INDEX);
+    opportunity.kernelRewriteRefitMainTokens[1] = 0u;
+    opportunity.kernelRewriteRefitMainTokens[4] = 1u;
+    opportunity.kernelRewriteRefitMainTokens[5] = 2u;
+    opportunity.kernelRewriteRefitPrologTokens[1] = 0u;
+    opportunity.kernelRewriteRefitPrologTokens[5] = 2u;
+    opportunity.kernelRewriteRefitDrainTokens[4] = 1u;
+    CHECK(vcl::isVuKernelTwoStageRefitEnvelope(opportunity));
+
+    // A launch-stage branch cannot live in the drain partition.
+    opportunity.kernelRewriteRefitPrologTokens[5] = vcl::VuKernelRefitNode::NO_INDEX;
+    opportunity.kernelRewriteRefitPrologTokens[4] = 1u;
+    opportunity.kernelRewriteRefitDrainTokens[4] = vcl::VuKernelRefitNode::NO_INDEX;
+    opportunity.kernelRewriteRefitDrainTokens[5] = 2u;
+    CHECK(!vcl::isVuKernelTwoStageRefitEnvelope(opportunity));
+
+    // Restore the branch, then make one node appear in both stage partitions.
+    opportunity.kernelRewriteRefitPrologTokens[4] = vcl::VuKernelRefitNode::NO_INDEX;
+    opportunity.kernelRewriteRefitPrologTokens[5] = 2u;
+    opportunity.kernelRewriteRefitDrainTokens[5] = vcl::VuKernelRefitNode::NO_INDEX;
+    opportunity.kernelRewriteRefitDrainTokens[4] = 1u;
+    opportunity.kernelRewriteRefitDrainTokens[0] = 0u;
+    CHECK(!vcl::isVuKernelTwoStageRefitEnvelope(opportunity));
 }
 
 TEST_CASE("VuSchedulerAnalysis 8b-2c-2: unsplittable op not touching any decision base is fine")

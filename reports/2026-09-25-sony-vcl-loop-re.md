@@ -244,6 +244,24 @@ scratch. The differential passes six cases from 1 through 8 loop iterations with
 varied index pairs, up to 48 output qwords and final loop pointers compared
 bit-for-bit. A fresh full corpus run (`corrected-refit-final-014`) has no failures
 and remains byte-identical to `direct-refit-default-001` for all 52 VSM outputs,
-with identical static-cost and `.vutext` summaries. The next meaningful experiment
-is therefore a semantically complete
-two-stage PROLOG/MAIN/DRAIN emitter for the corrected 37 -> 44 refit.
+with identical static-cost and `.vutext` summaries.
+
+The first complete two-stage envelope transport exposes a further distinction
+between structural scheduling and executable modulo scheduling. The corrected
+37 -> 44 layout is structurally partitionable into PROLOG/MAIN/DRAIN, but its
+final register plan still reports 117 cross-stage rename hints across six VF
+families. Only four final scratch decisions are allocatable after the existing
+source-level renames. Exhaustively trying the eight subsets of the three source
+rename decisions shows that nesting the current rename transformation is not a
+solution: with no source decisions the first refit reaches II=35 and all five
+final decisions fit, but reapplying those five scratch/materialize decisions and
+refitting produces II=49, seven further decisions and only two assignments.
+
+This strengthens the interpretation of Sony's loop optimizer as having a
+register-allocation/finalization phase materially coupled to modulo scheduling.
+OpenVCL should next model modulo variable expansion or an equivalent stage-aware
+rotation explicitly rather than recursively adding ordinary scratch copies. The
+experimental two-stage emitter remains gated off until that register plan is
+semantically closed. The corresponding Release safety baseline
+`two-stage-refit-safety-003` completes the full 52-VSM corpus with outputs,
+static-cost metrics and `.vutext` sizes identical to `corrected-refit-final-014`.

@@ -7191,6 +7191,9 @@ VuLoopPipelineOpportunity::VuLoopPipelineOpportunity()
 	kernelRewriteRefitStageCount = 0;
 	kernelRewriteRefitConflicts = 0;
 	kernelRewriteRefitMainTokenCount = 0;
+	kernelRewriteRefitRenameHintCount = 0;
+	kernelRewriteRefitRenameDecisionCount = 0;
+	kernelRewriteRefitAssignedRenameDecisionCount = 0;
 	kernelRewriteExactCandidateSelected = false;
 	kernelRewriteExactCandidateSourceII = 0;
 }
@@ -7230,8 +7233,13 @@ VuSoftwarePipelineRewritePlan::VuSoftwarePipelineRewritePlan()
 	kernelRewriteRefitStageCount = 0;
 	kernelRewriteRefitConflicts = 0;
 	kernelRewriteRefitMainTokenCount = 0;
+	kernelRewriteRefitRenameHintCount = 0;
+	kernelRewriteRefitRenameDecisionCount = 0;
+	kernelRewriteRefitAssignedRenameDecisionCount = 0;
 	directSelfContainedRefit = false;
 	directSelfContainedSourceII = 0;
+	twoStageRefitEnvelope = false;
+	twoStageRefitSourceII = 0;
 }
 
 bool isVuKernelCandidateScoreBetter( const VuKernelCandidateScore& candidate,
@@ -7279,6 +7287,66 @@ bool isVuKernelRefitSelfContained( const VuLoopPipelineOpportunity& opportunity 
 		++covered;
 	}
 	return covered == opportunity.kernelRewriteRefitNodes.size();
+}
+
+bool isVuKernelTwoStageRefitEnvelope( const VuLoopPipelineOpportunity& opportunity )
+{
+	if( opportunity.kernelRewriteRefitII == 0u
+	    || opportunity.kernelRewriteRefitStageCount != 2u
+	    || opportunity.kernelRewriteRefitConflicts != 0u
+	    || opportunity.kernelRewriteRefitNodes.empty() )
+		return false;
+
+	const unsigned int cells = opportunity.kernelRewriteRefitII * 4u;
+	if( opportunity.kernelRewriteRefitPrologTokens.size() != cells
+	    || opportunity.kernelRewriteRefitMainTokens.size() != cells
+	    || opportunity.kernelRewriteRefitDrainTokens.size() != cells )
+		return false;
+
+	const unsigned int nodeCount = static_cast<unsigned int>(
+	    opportunity.kernelRewriteRefitNodes.size() );
+	std::vector<unsigned int> mainSeen( nodeCount, 0u );
+	std::vector<unsigned int> prologSeen( nodeCount, 0u );
+	std::vector<unsigned int> drainSeen( nodeCount, 0u );
+
+	for( unsigned int i = 0; i < cells; ++i )
+	{
+		const unsigned int grids[3] = {
+			opportunity.kernelRewriteRefitMainTokens[i],
+			opportunity.kernelRewriteRefitPrologTokens[i],
+			opportunity.kernelRewriteRefitDrainTokens[i]
+		};
+		std::vector<unsigned int>* seen[3] = { &mainSeen, &prologSeen, &drainSeen };
+		for( unsigned int g = 0; g < 3u; ++g )
+		{
+			const unsigned int node = grids[g];
+			if( node == VuKernelRefitNode::NO_INDEX ) continue;
+			if( node >= nodeCount || ++(*seen[g])[node] != 1u ) return false;
+		}
+	}
+
+	unsigned int branchNode = VuKernelRefitNode::NO_INDEX;
+	for( unsigned int n = 0; n < nodeCount; ++n )
+	{
+		if( mainSeen[n] != 1u ) return false;
+		if( prologSeen[n] + drainSeen[n] != 1u ) return false;
+		if( opportunity.kernelRewriteRefitNodes[n].sourceTokenIndex
+		    == opportunity.branchTokenIndex )
+		{
+			if( branchNode != VuKernelRefitNode::NO_INDEX
+			    || opportunity.kernelRewriteRefitNodes[n].role
+		       != VuKernelRefitNode::ROLE_PASSTHROUGH )
+				return false;
+			branchNode = n;
+		}
+	}
+
+	// The launch-stage branch decides whether another stage-0 iteration may be
+	// started. A branch assigned to the draining stage cannot drive this envelope
+	// without speculative execution of a non-existent next iteration.
+	return branchNode != VuKernelRefitNode::NO_INDEX
+	    && prologSeen[branchNode] == 1u
+	    && drainSeen[branchNode] == 0u;
 }
 
 std::vector<VuBasicBlock> buildVuBasicBlocks( const std::list<Token>& tokens )
@@ -10131,6 +10199,8 @@ namespace
 			"OPENVCL_EXPERIMENT_EXACT_FEASIBILITY_PLACER",
 			"OPENVCL_EXPERIMENT_EXACT_EXPANDED_DDG_REFIT",
 			"OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION",
+			"OPENVCL_EXPERIMENT_TWO_STAGE_REFIT_ENVELOPE",
+			"OPENVCL_EXPERIMENT_SOURCE_RENAME_SUBSET_SWEEP",
 			"OPENVCL_DUMP_LOOP_SCHEDULE",
 			"OPENVCL_DUMP_KERNEL_LAYOUT",
 			"OPENVCL_DUMP_KERNEL_LAYOUT_ENTRIES",
@@ -10373,6 +10443,48 @@ namespace
 		                                 /*useExactGlobalResourceMatching=*/forceBranchAtTail,
 		                                 maximumRefitII );
 
+		if( std::getenv( "OPENVCL_EXPERIMENT_TWO_STAGE_REFIT_ENVELOPE" ) != NULL
+		    || std::getenv( "OPENVCL_DUMP_EXPANDED_REFIT_RENAMES" ) != NULL )
+		{
+			std::cerr << "[expanded-ddg-refit-registers] loop=" << opportunity.label
+			          << " refitII=" << shadow.kernelRewriteII
+			          << " refitStages=" << shadow.kernelRewriteStageCount
+			          << " hazards=" << shadow.kernelRewriteHazards.size()
+			          << " renameHints=" << shadow.kernelRewriteRenameHints.size()
+			          << " renameDecisions=" << shadow.kernelRewriteRenameDecisions.size()
+			          << "\n";
+			if( std::getenv( "OPENVCL_DUMP_EXPANDED_REFIT_RENAMES" ) != NULL )
+			{
+				for( unsigned int h = 0; h < shadow.kernelRewriteRenameHints.size(); ++h )
+				{
+					const VuKernelRenameHint& hint = shadow.kernelRewriteRenameHints[h];
+					std::cerr << "[expanded-ddg-refit-rename-hint] loop=" << opportunity.label
+					          << " reg=" << hint.reg
+					          << " entry=" << hint.entry
+					          << " stage=" << hint.stage
+					          << " kind=" << hint.kind
+					          << "\n";
+				}
+				for( unsigned int d = 0; d < shadow.kernelRewriteRenameDecisions.size(); ++d )
+				{
+					const VuKernelRenameDecision& decision = shadow.kernelRewriteRenameDecisions[d];
+					std::cerr << "[expanded-ddg-refit-rename-decision] loop=" << opportunity.label
+					          << " decision=" << d
+					          << " reg=" << decision.reg
+					          << " scratch=" << ( decision.assigned ? decision.scratch : std::string( "<none>" ) )
+					          << " assigned=" << ( decision.assigned ? 1 : 0 );
+					if( d < shadow.kernelRewriteRenameMoveSlots.size() )
+					{
+						const VuKernelRenameMoveSlot& move = shadow.kernelRewriteRenameMoveSlots[d];
+						std::cerr << " moveAssigned=" << ( move.assigned ? 1 : 0 );
+						if( move.assigned )
+							std::cerr << " moveSlot=" << move.modSlot << " moveLane=" << move.lane;
+					}
+					std::cerr << "\n";
+				}
+			}
+		}
+
 		// Track 9.G-1h step 4b-3b-4: publish scalar refit metrics back to
 		// the caller's opportunity so downstream consumers (4b-3b-5
 		// onward) can see the shadow placer's verdict without rerunning
@@ -10384,6 +10496,15 @@ namespace
 		opportunity.kernelRewriteRefitConflicts      = shadow.kernelRewriteConflicts;
 		opportunity.kernelRewriteRefitMainTokenCount =
 		    static_cast<unsigned int>( shadowMainTokenIndices.size() );
+		opportunity.kernelRewriteRefitRenameHintCount = static_cast<unsigned int>(
+		    shadow.kernelRewriteRenameHints.size() );
+		opportunity.kernelRewriteRefitRenameDecisionCount = static_cast<unsigned int>(
+		    shadow.kernelRewriteRenameDecisions.size() );
+		opportunity.kernelRewriteRefitAssignedRenameDecisionCount = 0u;
+		for( unsigned int d = 0; d < shadow.kernelRewriteRenameDecisions.size(); ++d )
+			if( shadow.kernelRewriteRenameDecisions[d].assigned )
+				++opportunity.kernelRewriteRefitAssignedRenameDecisionCount;
+		opportunity.kernelRewriteRefitRenameDecisions = shadow.kernelRewriteRenameDecisions;
 
 		// Publish the expanded-node descriptors plus translated prolog/main/
 		// drain grids. Every non-empty shadow token is mapped back to the
@@ -10977,10 +11098,16 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 		// expansion and the expanded-DDG refit, then ranked by the final refit
 		// schedule. This remains diagnostic: the selected probe is not copied
 		// back into the production opportunity or consumed by codegen.
-		const bool directSelfContainedRefitExperiment =
-		    std::getenv( "OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION" ) != NULL;
-		if( ( std::getenv( "OPENVCL_EXPERIMENT_EXACT_CANDIDATE_SWEEP" ) != NULL
-		      || directSelfContainedRefitExperiment )
+			const bool directSelfContainedRefitExperiment =
+			    std::getenv( "OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION" ) != NULL;
+			const bool twoStageRefitEnvelopeExperiment =
+			    std::getenv( "OPENVCL_EXPERIMENT_TWO_STAGE_REFIT_ENVELOPE" ) != NULL;
+			const bool sourceRenameSubsetSweep =
+			    std::getenv( "OPENVCL_EXPERIMENT_SOURCE_RENAME_SUBSET_SWEEP" ) != NULL;
+			if( ( std::getenv( "OPENVCL_EXPERIMENT_EXACT_CANDIDATE_SWEEP" ) != NULL
+			      || directSelfContainedRefitExperiment
+			      || twoStageRefitEnvelopeExperiment
+			      || sourceRenameSubsetSweep )
 		    && opportunity.simpleCountedLoop
 		    && opportunity.mainTokenIndices.empty()
 		    && !opportunity.multiQPrologTokenIndices.empty()
@@ -11039,7 +11166,9 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 			unsigned int bestRefitMainNodes = 0u;
 			unsigned int bestRefitDrainCells = 0u;
 			unsigned int bestRefitDrainNodes = 0u;
-			bool bestRefitSelfContained = false;
+				bool bestRefitSelfContained = false;
+				bool bestRefitTwoStageEnvelope = false;
+				unsigned int bestRefitRenameHints = 0u;
 			int bestRefitBranchCycle = -1;
 			int bestRefitBranchLane = -1;
 			unsigned int evaluated = 0u;
@@ -11090,8 +11219,10 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 					runExpandedDDGRefitDiagnostic( candidate, indexedTokens, tokens,
 					                                 /*forceExactExpandedRefit=*/true,
 					                                 maxStates,
-					                                 directSelfContainedRefitExperiment ? 1u : maxStages,
-					                                 directSelfContainedRefitExperiment );
+					                                 ( directSelfContainedRefitExperiment
+					                                   && !twoStageRefitEnvelopeExperiment ) ? 1u : maxStages,
+					                                 directSelfContainedRefitExperiment
+					                                   && !twoStageRefitEnvelopeExperiment );
 
 				VuKernelCandidateScore score;
 				score.sourceII = sourceII;
@@ -11129,9 +11260,10 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 				          << " hardBlockers=" << hardBlockers
 				          << " softBlockers=" << softBlockers
 				          << " refitII=" << score.refitII
-				          << " refitStages=" << score.refitStageCount
-				          << " refitMain=" << score.refitMainTokenCount
-				          << " branchCycle=" << candidateBranchCycle
+					          << " refitStages=" << score.refitStageCount
+					          << " refitMain=" << score.refitMainTokenCount
+					          << " refitRenameHints=" << candidate.kernelRewriteRefitRenameHintCount
+					          << " branchCycle=" << candidateBranchCycle
 				          << " branchLane=" << candidateBranchLane
 				          << " valid=" << ( score.valid ? 1 : 0 )
 				          << "\n";
@@ -11156,6 +11288,8 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 					bestRefitDrainNodes = countRefitGridNodes(
 					    candidate.kernelRewriteRefitDrainTokens );
 					bestRefitSelfContained = isVuKernelRefitSelfContained( candidate );
+					bestRefitTwoStageEnvelope = isVuKernelTwoStageRefitEnvelope( candidate );
+					bestRefitRenameHints = candidate.kernelRewriteRefitRenameHintCount;
 					unsigned int branchNode = VuKernelRefitNode::NO_INDEX;
 					for( unsigned int n = 0; n < candidate.kernelRewriteRefitNodes.size(); ++n )
 						if( candidate.kernelRewriteRefitNodes[n].sourceTokenIndex == opportunity.branchTokenIndex )
@@ -11195,16 +11329,122 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 				          << " refitMainNodes=" << bestRefitMainNodes
 				          << " refitDrainCells=" << bestRefitDrainCells
 				          << " refitDrainNodes=" << bestRefitDrainNodes
+				          << " refitRenameHints=" << bestRefitRenameHints
 				          << " selfContained=" << ( bestRefitSelfContained ? 1 : 0 )
+				          << " twoStageEnvelope=" << ( bestRefitTwoStageEnvelope ? 1 : 0 )
 				          << " branchCycle=" << bestRefitBranchCycle
 				          << " branchLane=" << bestRefitBranchLane;
 			}
 			std::cerr << "\n";
+				if( bestScore.valid && haveBestCandidate
+				    && std::getenv( "OPENVCL_DUMP_EXPANDED_REFIT_RENAMES" ) != NULL )
+			{
+				for( unsigned int h = 0; h < bestCandidate.kernelRewriteRenameHints.size(); ++h )
+				{
+					const VuKernelRenameHint& hint = bestCandidate.kernelRewriteRenameHints[h];
+					std::cerr << "[exact-candidate-source-rename-hint] loop=" << opportunity.label
+					          << " sourceII=" << bestScore.sourceII
+					          << " reg=" << hint.reg
+					          << " entry=" << hint.entry
+					          << " stage=" << hint.stage
+					          << " kind=" << hint.kind
+					          << "\n";
+				}
+				for( unsigned int d = 0; d < bestCandidate.kernelRewriteRenameDecisions.size(); ++d )
+				{
+					const VuKernelRenameDecision& decision =
+					    bestCandidate.kernelRewriteRenameDecisions[d];
+					std::cerr << "[exact-candidate-source-rename-decision] loop=" << opportunity.label
+					          << " sourceII=" << bestScore.sourceII
+					          << " decision=" << d
+					          << " reg=" << decision.reg
+					          << " scratch=" << ( decision.assigned ? decision.scratch : std::string( "<none>" ) )
+					          << " assigned=" << ( decision.assigned ? 1 : 0 )
+					          << "\n";
+				}
+				}
 
-			if( directSelfContainedRefitExperiment
-			    && haveBestCandidate
-			    && bestScore.valid
-			    && bestRefitSelfContained )
+				if( bestScore.valid && haveBestCandidate && sourceRenameSubsetSweep )
+				{
+					const unsigned int decisions = static_cast<unsigned int>(
+					    bestCandidate.kernelRewriteRenameDecisions.size() );
+					if( decisions <= 8u )
+					{
+						const unsigned int subsetCount = 1u << decisions;
+						for( unsigned int mask = 0u; mask < subsetCount; ++mask )
+						{
+							VuLoopPipelineOpportunity variant = bestCandidate;
+							variant.kernelRewriteRenameHints.clear();
+							variant.kernelRewriteRenameMoveSlots.clear();
+							variant.kernelRewriteRenameDecisions.clear();
+							std::string keptRegs;
+							for( unsigned int d = 0; d < decisions; ++d )
+							{
+								if( ( mask & ( 1u << d ) ) == 0u ) continue;
+								if( !keptRegs.empty() ) keptRegs += ",";
+								keptRegs += bestCandidate.kernelRewriteRenameDecisions[d].reg;
+								variant.kernelRewriteRenameDecisions.push_back(
+								    bestCandidate.kernelRewriteRenameDecisions[d] );
+							}
+							runExpandedDDGRefitDiagnostic( variant, indexedTokens, tokens,
+							                                 /*forceExactExpandedRefit=*/true,
+							                                 maxStates,
+							                                 maxStages,
+							                                 /*forceBranchAtTail=*/false );
+							VuLoopPipelineOpportunity closure;
+							bool closureRan = false;
+							if( variant.kernelRewriteRefitRenameDecisionCount > 0u
+							    && variant.kernelRewriteRefitRenameDecisionCount
+							       == variant.kernelRewriteRefitAssignedRenameDecisionCount )
+							{
+								closure = bestCandidate;
+								closure.kernelRewriteRenameHints.clear();
+								closure.kernelRewriteRenameMoveSlots.clear();
+								closure.kernelRewriteRenameDecisions =
+								    variant.kernelRewriteRefitRenameDecisions;
+								runExpandedDDGRefitDiagnostic( closure, indexedTokens, tokens,
+								                                 /*forceExactExpandedRefit=*/true,
+								                                 maxStates,
+								                                 maxStages,
+								                                 /*forceBranchAtTail=*/false );
+								closureRan = true;
+							}
+							std::cerr << "[source-rename-subset] loop=" << opportunity.label
+							          << " sourceII=" << bestScore.sourceII
+							          << " mask=" << mask
+							          << " kept=" << variant.kernelRewriteRenameDecisions.size()
+							          << " keptRegs=" << ( keptRegs.empty() ? std::string( "<none>" ) : keptRegs )
+							          << " refitII=" << variant.kernelRewriteRefitII
+							          << " refitStages=" << variant.kernelRewriteRefitStageCount
+							          << " refitMain=" << variant.kernelRewriteRefitMainTokenCount
+							          << " finalHints=" << variant.kernelRewriteRefitRenameHintCount
+							          << " finalDecisions=" << variant.kernelRewriteRefitRenameDecisionCount
+							          << " finalAssigned=" << variant.kernelRewriteRefitAssignedRenameDecisionCount
+							          << " closureRan=" << ( closureRan ? 1 : 0 );
+							if( closureRan )
+								std::cerr << " closureII=" << closure.kernelRewriteRefitII
+								          << " closureStages=" << closure.kernelRewriteRefitStageCount
+								          << " closureMain=" << closure.kernelRewriteRefitMainTokenCount
+								          << " closureHints=" << closure.kernelRewriteRefitRenameHintCount
+								          << " closureDecisions=" << closure.kernelRewriteRefitRenameDecisionCount
+								          << " closureAssigned=" << closure.kernelRewriteRefitAssignedRenameDecisionCount;
+							std::cerr << "\n";
+						}
+					}
+					else
+					{
+						std::cerr << "[source-rename-subset] loop=" << opportunity.label
+						          << " sourceII=" << bestScore.sourceII
+						          << " skipped=1 decisions=" << decisions << "\n";
+					}
+				}
+
+				const bool publishDirectCandidate = directSelfContainedRefitExperiment
+			    && haveBestCandidate && bestScore.valid && bestRefitSelfContained;
+			const bool publishTwoStageCandidate = twoStageRefitEnvelopeExperiment
+			    && haveBestCandidate && bestScore.valid && bestRefitTwoStageEnvelope
+			    && bestRefitRenameHints == 0u;
+			if( publishDirectCandidate || publishTwoStageCandidate )
 			{
 				// Publish only the exact selected candidate's scheduling/rename/refit
 				// state. Loop shape, labels and the original multi-Q analysis remain
@@ -11223,6 +11463,13 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 				opportunity.kernelRewriteRefitStageCount = bestCandidate.kernelRewriteRefitStageCount;
 				opportunity.kernelRewriteRefitConflicts = bestCandidate.kernelRewriteRefitConflicts;
 				opportunity.kernelRewriteRefitMainTokenCount = bestCandidate.kernelRewriteRefitMainTokenCount;
+				opportunity.kernelRewriteRefitRenameHintCount = bestCandidate.kernelRewriteRefitRenameHintCount;
+				opportunity.kernelRewriteRefitRenameDecisionCount =
+				    bestCandidate.kernelRewriteRefitRenameDecisionCount;
+				opportunity.kernelRewriteRefitAssignedRenameDecisionCount =
+				    bestCandidate.kernelRewriteRefitAssignedRenameDecisionCount;
+				opportunity.kernelRewriteRefitRenameDecisions =
+				    bestCandidate.kernelRewriteRefitRenameDecisions;
 				opportunity.kernelRewriteRefitNodes = bestCandidate.kernelRewriteRefitNodes;
 				opportunity.kernelRewriteRefitPrologTokens = bestCandidate.kernelRewriteRefitPrologTokens;
 				opportunity.kernelRewriteRefitMainTokens = bestCandidate.kernelRewriteRefitMainTokens;
@@ -12223,15 +12470,21 @@ std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( 
 	const std::vector<VuLoopPipelineOpportunity> opportunities = findVuLoopPipelineOpportunities( tokens );
 	const bool directSelfContainedRefitExperiment =
 	    std::getenv( "OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION" ) != NULL;
+	const bool twoStageRefitEnvelopeExperiment =
+	    std::getenv( "OPENVCL_EXPERIMENT_TWO_STAGE_REFIT_ENVELOPE" ) != NULL;
 	std::map<unsigned int, bool> plannedLabelIndices;
 	for( std::vector<VuLoopPipelineOpportunity>::const_iterator i = opportunities.begin(); i != opportunities.end(); ++i )
 	{
 		const bool directSelfContained = directSelfContainedRefitExperiment
 		    && i->kernelRewriteExactCandidateSelected
 		    && isVuKernelRefitSelfContained( *i );
+		const bool twoStageRefitEnvelope = twoStageRefitEnvelopeExperiment
+		    && i->kernelRewriteExactCandidateSelected
+		    && isVuKernelTwoStageRefitEnvelope( *i );
 		if( !i->canEmitSoftwarePipeline
 		    && !i->canEmitMultiQSoftwarePipeline
-		    && !directSelfContained )
+		    && !directSelfContained
+		    && !twoStageRefitEnvelope )
 			continue;
 
 		VuSoftwarePipelineRewritePlan plan;
@@ -12275,7 +12528,12 @@ std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( 
 		plan.kernelRewriteRefitII             = i->kernelRewriteRefitII;
 		plan.kernelRewriteRefitStageCount     = i->kernelRewriteRefitStageCount;
 		plan.kernelRewriteRefitConflicts      = i->kernelRewriteRefitConflicts;
-		plan.kernelRewriteRefitMainTokenCount = i->kernelRewriteRefitMainTokenCount;
+			plan.kernelRewriteRefitMainTokenCount = i->kernelRewriteRefitMainTokenCount;
+			plan.kernelRewriteRefitRenameHintCount = i->kernelRewriteRefitRenameHintCount;
+			plan.kernelRewriteRefitRenameDecisionCount = i->kernelRewriteRefitRenameDecisionCount;
+			plan.kernelRewriteRefitAssignedRenameDecisionCount =
+			    i->kernelRewriteRefitAssignedRenameDecisionCount;
+			plan.kernelRewriteRefitRenameDecisions = i->kernelRewriteRefitRenameDecisions;
 		// Track 9.G-1h step 4b-7a: mirror the refit node vector + grid
 		// so the emission-side bake-in builder (CodeGenerator) can
 		// reconstruct the rewritten MAIN body without reaching back
@@ -12286,8 +12544,10 @@ std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( 
 		plan.kernelRewriteRefitDrainTokens    = i->kernelRewriteRefitDrainTokens;
 		plan.directSelfContainedRefit         = directSelfContained;
 		plan.directSelfContainedSourceII      = i->kernelRewriteExactCandidateSourceII;
+		plan.twoStageRefitEnvelope            = twoStageRefitEnvelope;
+		plan.twoStageRefitSourceII            = i->kernelRewriteExactCandidateSourceII;
 
-		if( directSelfContained )
+		if( directSelfContained || twoStageRefitEnvelope )
 		{
 			plans.push_back( plan );
 			plannedLabelIndices[plan.labelTokenIndex] = true;
@@ -12784,11 +13044,88 @@ namespace
 		return true;
 	}
 
-	bool appendDirectRefitNodeToken( const VuKernelRefitNode& node,
-	                               const VuSoftwarePipelineRewritePlan& plan,
-	                               const std::vector<const Token*>& indexedTokens,
-	                               const Token& donor,
-	                               std::list<Token>& output )
+	bool isTwoStageRefitEnvelopePlanEligible(
+	    const VuSoftwarePipelineRewritePlan& plan,
+	    const std::vector<const Token*>& indexedTokens )
+	{
+		if( !plan.twoStageRefitEnvelope
+		    || plan.kernelRewriteRefitII == 0u
+		    || plan.kernelRewriteRefitStageCount != 2u
+		    || plan.kernelRewriteRefitConflicts != 0u
+		    || plan.kernelRewriteRefitRenameHintCount != 0u
+		    || plan.kernelRewriteRefitNodes.empty() )
+			return false;
+		if( plan.labelTokenIndex >= indexedTokens.size()
+		    || plan.branchTokenIndex >= indexedTokens.size()
+		    || !branchCanInvertToDrain( *indexedTokens[plan.branchTokenIndex] ) )
+			return false;
+
+		const unsigned int cells = plan.kernelRewriteRefitII * 4u;
+		if( plan.kernelRewriteRefitPrologTokens.size() != cells
+		    || plan.kernelRewriteRefitMainTokens.size() != cells
+		    || plan.kernelRewriteRefitDrainTokens.size() != cells )
+			return false;
+
+		const unsigned int nodeCount = static_cast<unsigned int>(
+		    plan.kernelRewriteRefitNodes.size() );
+		std::vector<unsigned int> mainSeen( nodeCount, 0u );
+		std::vector<unsigned int> prologSeen( nodeCount, 0u );
+		std::vector<unsigned int> drainSeen( nodeCount, 0u );
+		for( unsigned int g = 0; g < cells; ++g )
+		{
+			const unsigned int entries[3] = {
+				plan.kernelRewriteRefitMainTokens[g],
+				plan.kernelRewriteRefitPrologTokens[g],
+				plan.kernelRewriteRefitDrainTokens[g]
+			};
+			std::vector<unsigned int>* seen[3] = { &mainSeen, &prologSeen, &drainSeen };
+			for( unsigned int k = 0; k < 3u; ++k )
+			{
+				const unsigned int node = entries[k];
+				if( node == VuKernelRefitNode::NO_INDEX ) continue;
+				if( node >= nodeCount || ++(*seen[k])[node] != 1u ) return false;
+			}
+		}
+
+		unsigned int branchNode = VuKernelRefitNode::NO_INDEX;
+		for( unsigned int n = 0; n < nodeCount; ++n )
+		{
+			const VuKernelRefitNode& node = plan.kernelRewriteRefitNodes[n];
+			if( mainSeen[n] != 1u || prologSeen[n] + drainSeen[n] != 1u ) return false;
+			if( node.sourceTokenIndex == plan.branchTokenIndex )
+			{
+				if( branchNode != VuKernelRefitNode::NO_INDEX
+				    || node.role != VuKernelRefitNode::ROLE_PASSTHROUGH ) return false;
+				branchNode = n;
+			}
+			if( node.sourceTokenIndex != VuKernelRefitNode::NO_INDEX
+			    && node.sourceTokenIndex >= indexedTokens.size() ) return false;
+			if( ( node.role == VuKernelRefitNode::ROLE_RETARGET_DEST
+			      || node.role == VuKernelRefitNode::ROLE_MATERIALIZE_MOVE
+			      || node.role == VuKernelRefitNode::ROLE_TAIL_MOVE )
+			    && node.decisionIndex >= plan.kernelRewriteRenameDecisions.size() ) return false;
+			if( ( node.role == VuKernelRefitNode::ROLE_MATERIALIZE_MOVE
+			      || node.role == VuKernelRefitNode::ROLE_TAIL_MOVE )
+			    && node.fieldMask != 0 )
+			{
+				unsigned int decisionMask = decisionRegFieldMask(
+				    plan.kernelRewriteRenameDecisions[node.decisionIndex].reg );
+				if( decisionMask == 0 ) decisionMask = Token::X | Token::Y | Token::Z | Token::W;
+				if( ( node.fieldMask & decisionMask ) == 0
+				    || ( node.fieldMask & ~decisionMask ) != 0 ) return false;
+			}
+		}
+
+		return branchNode != VuKernelRefitNode::NO_INDEX
+		    && prologSeen[branchNode] == 1u
+		    && drainSeen[branchNode] == 0u;
+	}
+
+	bool appendRefitNodeToken( const VuKernelRefitNode& node,
+	                          const VuSoftwarePipelineRewritePlan& plan,
+	                          const std::vector<const Token*>& indexedTokens,
+	                          const Token& donor,
+	                          std::list<Token>& output )
 	{
 		switch( node.role )
 		{
@@ -12828,6 +13165,63 @@ namespace
 		}
 		}
 		return false;
+	}
+
+	bool appendRefitGridBody( const VuSoftwarePipelineRewritePlan& plan,
+	                         const std::vector<unsigned int>& grid,
+	                         unsigned int excludedNode,
+	                         const std::vector<const Token*>& indexedTokens,
+	                         const Token& donor,
+	                         std::list<Token>& output,
+	                         VuKernelBlockRange& range )
+	{
+		const unsigned int nodeCount = static_cast<unsigned int>(
+		    plan.kernelRewriteRefitNodes.size() );
+		std::vector<bool> used( nodeCount, false );
+		for( unsigned int g = 0; g < grid.size(); ++g )
+		{
+			const unsigned int node = grid[g];
+			if( node == VuKernelRefitNode::NO_INDEX || node == excludedNode ) continue;
+			if( node >= nodeCount ) return false;
+			used[node] = true;
+		}
+
+		std::vector<unsigned int> remap( nodeCount, VuKernelRefitNode::NO_INDEX );
+		for( unsigned int n = 0; n < nodeCount; ++n )
+		{
+			if( !used[n] ) continue;
+			remap[n] = static_cast<unsigned int>( range.refitNodes.size() );
+			range.refitNodes.push_back( plan.kernelRewriteRefitNodes[n] );
+			if( !appendRefitNodeToken( plan.kernelRewriteRefitNodes[n], plan,
+			                          indexedTokens, donor, output ) ) return false;
+		}
+
+		range.refitMainTokens.reserve( grid.size() );
+		for( unsigned int g = 0; g < grid.size(); ++g )
+		{
+			const unsigned int node = grid[g];
+			if( node == VuKernelRefitNode::NO_INDEX || node == excludedNode )
+				range.refitMainTokens.push_back( VuKernelRefitNode::NO_INDEX );
+			else
+				range.refitMainTokens.push_back( remap[node] );
+		}
+		return true;
+	}
+
+	Token refitEnvelopeLabelToken( const Token& donor, const std::string& label )
+	{
+		// Do not carry the source --LoopCS directive onto internal envelope
+		// labels. Otherwise the normal software-pipeline pass can rediscover the
+		// generated MAIN backedge and pipeline the experiment a second time.
+		Token token( donor );
+		token.setLabel( label );
+		token.setName( "" );
+		token.setOperand( NULL );
+		token.setFlags( 0 );
+		token.setBroadcast( 0 );
+		token.setFields( 0 );
+		token.arguments().clear();
+		return token;
 	}
 
 	// Track 9.G step 7b: retarget the BRANCH IMMEDIATE argument of a
@@ -12882,6 +13276,8 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 	{
 		const bool directEligible =
 		    isDirectSelfContainedRefitPlanEligible( *p, indexedTokens );
+		const bool twoStageEligible =
+		    isTwoStageRefitEnvelopePlanEligible( *p, indexedTokens );
 		if( p->directSelfContainedRefit )
 		{
 			if( std::getenv( "OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION" ) != NULL )
@@ -12902,7 +13298,24 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 			if( !directEligible )
 				continue;
 		}
-		if( directEligible )
+		if( p->twoStageRefitEnvelope )
+		{
+			if( std::getenv( "OPENVCL_EXPERIMENT_TWO_STAGE_REFIT_ENVELOPE" ) != NULL )
+			{
+				std::cerr << "[two-stage-refit-plan] loop=" << p->label
+				          << " eligible=" << ( twoStageEligible ? 1 : 0 )
+				          << " sourceII=" << p->twoStageRefitSourceII
+				          << " refitII=" << p->kernelRewriteRefitII
+				          << " prologCells=" << p->kernelRewriteRefitPrologTokens.size()
+				          << " mainCells=" << p->kernelRewriteRefitMainTokens.size()
+				          << " drainCells=" << p->kernelRewriteRefitDrainTokens.size()
+				          << " nodes=" << p->kernelRewriteRefitNodes.size()
+				          << "\n";
+			}
+			if( !twoStageEligible )
+				continue;
+		}
+		if( directEligible || twoStageEligible )
 		{
 			eligibleByLabelIndex[p->labelTokenIndex] = *p;
 			continue;
@@ -12957,6 +13370,106 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 			continue;
 		}
 
+		if( isTwoStageRefitEnvelopePlanEligible( plan, indexedTokens ) )
+		{
+			const std::string prologEndLabel = plan.label + "__REFIT_PROLOG_END";
+			const std::string mainLabel = plan.label + "__REFIT_MAIN";
+			const std::string mainEndLabel = plan.label + "__REFIT_MAIN_END";
+			const std::string drainLabel = plan.label + "__REFIT_DRAIN";
+			const std::string drainEndLabel = plan.label + "__REFIT_DRAIN_END";
+
+			unsigned int branchNode = VuKernelRefitNode::NO_INDEX;
+			for( unsigned int n = 0; n < plan.kernelRewriteRefitNodes.size(); ++n )
+				if( plan.kernelRewriteRefitNodes[n].sourceTokenIndex == plan.branchTokenIndex )
+					branchNode = n;
+			if( branchNode == VuKernelRefitNode::NO_INDEX )
+				return tokens;
+
+			std::list<Token> replacement;
+			VuKernelBlockRange prologRange;
+			VuKernelBlockRange mainRange;
+			VuKernelBlockRange drainRange;
+			prologRange.mainLabel = plan.label;
+			prologRange.endLabel = prologEndLabel;
+			prologRange.II = plan.kernelRewriteRefitII;
+			prologRange.hasClosingBranch = false;
+			prologRange.forceRefitGrid = true;
+			mainRange.mainLabel = mainLabel;
+			mainRange.endLabel = mainEndLabel;
+			mainRange.II = plan.kernelRewriteRefitII;
+			mainRange.hasClosingBranch = true;
+			mainRange.forceRefitGrid = true;
+			drainRange.mainLabel = drainLabel;
+			drainRange.endLabel = drainEndLabel;
+			drainRange.II = plan.kernelRewriteRefitII;
+			drainRange.hasClosingBranch = false;
+			drainRange.forceRefitGrid = true;
+
+			Token prologLabelTok = refitEnvelopeLabelToken( *i, plan.label );
+			replacement.push_back( prologLabelTok );
+			if( !appendRefitGridBody( plan, plan.kernelRewriteRefitPrologTokens,
+			                          branchNode, indexedTokens, *i,
+			                          replacement, prologRange ) )
+			{
+				outRanges.clear();
+				return tokens;
+			}
+			Token prologEndTok = refitEnvelopeLabelToken( *i, prologEndLabel );
+			replacement.push_back( prologEndTok );
+
+			// Stage 0 has completed one logical iteration. If its original
+			// backedge would fall through, skip the overlap kernel but still run
+			// stage 1 of that iteration in DRAIN. Keep an explicit delay NOP so
+			// no next-iteration stage-0 work executes speculatively.
+			const Token& branchSrc = *indexedTokens[plan.branchTokenIndex];
+			replacement.push_back( invertedBranchToDrainToken( branchSrc, drainLabel ) );
+			replacement.push_back( branchDelayNopToken( branchSrc ) );
+
+			Token mainLabelTok = refitEnvelopeLabelToken( *i, mainLabel );
+			replacement.push_back( mainLabelTok );
+			if( !appendRefitGridBody( plan, plan.kernelRewriteRefitMainTokens,
+			                          branchNode, indexedTokens, *i,
+			                          replacement, mainRange ) )
+			{
+				outRanges.clear();
+				return tokens;
+			}
+			// The exact refit places the launch-stage branch before a few drain-
+			// stage rows. Emit those rows first and delay the branch until the
+			// end of the 44-row kernel; this is conservative and avoids dropping
+			// already-launched work on a taken backedge.
+			Token mainBranch( branchSrc );
+			mainBranch.setLabel( "" );
+			retargetBranchTokenTarget( mainBranch, mainLabel );
+			replacement.push_back( mainBranch );
+			Token mainEndTok = refitEnvelopeLabelToken( *i, mainEndLabel );
+			replacement.push_back( mainEndTok );
+
+			Token drainLabelTok = refitEnvelopeLabelToken( *i, drainLabel );
+			replacement.push_back( drainLabelTok );
+			if( !appendRefitGridBody( plan, plan.kernelRewriteRefitDrainTokens,
+			                          VuKernelRefitNode::NO_INDEX, indexedTokens, *i,
+			                          replacement, drainRange ) )
+			{
+				outRanges.clear();
+				return tokens;
+			}
+			Token drainEndTok = refitEnvelopeLabelToken( *i, drainEndLabel );
+			replacement.push_back( drainEndTok );
+
+			output.splice( output.end(), replacement );
+			outRanges.push_back( prologRange );
+			outRanges.push_back( mainRange );
+			outRanges.push_back( drainRange );
+
+			while( index <= plan.branchTokenIndex && i != tokens.end() )
+			{
+				++i;
+				++index;
+			}
+			continue;
+		}
+
 		if( isDirectSelfContainedRefitPlanEligible( plan, indexedTokens ) )
 		{
 			const std::string directEndLabel = plan.label + "__DIRECT_END";
@@ -12991,8 +13504,8 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 			for( unsigned int n = 0; n < plan.kernelRewriteRefitNodes.size(); ++n )
 			{
 				if( n == branchNode ) continue;
-				if( !appendDirectRefitNodeToken( plan.kernelRewriteRefitNodes[n], plan,
-				                               indexedTokens, *i, output ) )
+				if( !appendRefitNodeToken( plan.kernelRewriteRefitNodes[n], plan,
+				                          indexedTokens, *i, output ) )
 				{
 					emittedAll = false;
 					break;

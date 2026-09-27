@@ -1040,7 +1040,8 @@ bool CodeGenerator::beginProcess(const std::list<Token>& tokens)
 			// rewritten by the new emitter; ineligible plans remain
 			// the responsibility of applyVuSoftwarePipelinePlans below.
 			if( std::getenv("OPENVCL_USE_GENERIC_KERNEL_REWRITE") != NULL
-			    || std::getenv("OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION") != NULL )
+			    || std::getenv("OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION") != NULL
+			    || std::getenv("OPENVCL_EXPERIMENT_TWO_STAGE_REFIT_ENVELOPE") != NULL )
 			{
 				// 9.G-1h-4a-2: capture MAIN-body ranges out-of-band
 				// for the 4a-3 scheduler-bypass consumer.
@@ -1841,29 +1842,30 @@ void buildKernelBakeIns( const std::list<Token>& tokens,
 		}
 		b.mainLabelTok = mainLabelTok;
 
-		// Collect body tokens between (mainLabelTok, endLabelTok). The
-		// last token in that range is the back-edge branch (mainBranch
-		// in the rewrite emitter); everything before it is body.
-		std::vector<const Token*> body;
+		// Collect tokens strictly between the two label carriers. Historical
+		// MAIN ranges end with a back-edge branch; the two-stage envelope also
+		// publishes branchless PROLOG/DRAIN ranges using the exact same grid
+		// machinery.
+		std::vector<const Token*> rangeTokens;
 		bool inRange = false;
-		const Token* lastInRange = NULL;
 		for( std::list<Token>::const_iterator it = tokens.begin(); it != tokens.end(); ++it )
 		{
 			const Token* p = &*it;
 			if( p == endLabelTok ) break;
-			if( inRange )
-			{
-				if( lastInRange ) body.push_back( lastInRange );
-				lastInRange = p;
-			}
+			if( inRange ) rangeTokens.push_back( p );
 			if( p == mainLabelTok ) inRange = true;
 		}
-		if( lastInRange == NULL )
+		if( range.hasClosingBranch && rangeTokens.empty() )
 		{
 			outBakeIns.push_back(b);
 			continue;
 		}
-		b.branchTok = lastInRange;
+		std::vector<const Token*> body = rangeTokens;
+		if( range.hasClosingBranch )
+		{
+			b.branchTok = body.back();
+			body.pop_back();
+		}
 
 		// 9.G-1h-4b-7b: if the analysis published a refit grid for this
 		// range, prefer it over the original positional grid->body
@@ -1897,7 +1899,7 @@ void buildKernelBakeIns( const std::list<Token>& tokens,
 				}
 			}
 		}
-		if( refitHasRewrites )
+		if( range.forceRefitGrid || refitHasRewrites )
 		{
 			bool refitOk = true;
 			b.cycles.assign( range.II, std::pair<const Token*, const Token*>( NULL, NULL ) );
@@ -1935,7 +1937,7 @@ void buildKernelBakeIns( const std::list<Token>& tokens,
 			{
 				for( size_t k = 0; k < body.size(); ++k )
 					b.bodySkip.insert( body[k] );
-				b.bodySkip.insert( b.branchTok );
+				if( b.branchTok ) b.bodySkip.insert( b.branchTok );
 				b.active = true;
 				outBakeIns.push_back(b);
 				continue;
@@ -1944,6 +1946,11 @@ void buildKernelBakeIns( const std::list<Token>& tokens,
 			// path. Reset cycles so the legacy walk starts from a clean
 			// vector.
 			b.cycles.clear();
+		}
+		if( range.forceRefitGrid )
+		{
+			outBakeIns.push_back(b);
+			continue;
 		}
 
 		// Map grid cells onto body tokens in placer push order.
@@ -1976,7 +1983,7 @@ void buildKernelBakeIns( const std::list<Token>& tokens,
 
 		for( size_t k = 0; k < body.size(); ++k )
 			b.bodySkip.insert( body[k] );
-		b.bodySkip.insert( b.branchTok );
+		if( b.branchTok ) b.bodySkip.insert( b.branchTok );
 		b.active = true;
 		outBakeIns.push_back(b);
 	}
@@ -2121,13 +2128,15 @@ bool CodeGenerator::emitStrictScheduledProgram( const std::list<Token>& tokens, 
 						lastBodySlot = j;
 				}
 				const unsigned int schedulerCycles = lastBodySlot - i + 1;
-				const unsigned int branchDelay =
-					bake->branchTok ? vuTokenBranchDelaySlots(*bake->branchTok) : 0;
-				const unsigned int lastCycle = bake->II - 1;
-				const bool substituteBranch =
-					( bake->II > 0 ) && ( bake->cycles[lastCycle].second == NULL );
-				const unsigned int bakeCycles =
-					bake->II + branchDelay + ( substituteBranch ? 0u : 1u );
+					const unsigned int branchDelay =
+						bake->branchTok ? vuTokenBranchDelaySlots(*bake->branchTok) : 0;
+					const unsigned int lastCycle = bake->II - 1;
+					const bool substituteBranch =
+						bake->branchTok && ( bake->II > 0 )
+						&& ( bake->cycles[lastCycle].second == NULL );
+					const unsigned int bakeCycles =
+						bake->II + branchDelay
+						+ ( bake->branchTok && !substituteBranch ? 1u : 0u );
 				if( bakeCycles > schedulerCycles )
 				{
 					// Bake-in would regress; let the scheduler handle
@@ -2145,9 +2154,10 @@ bool CodeGenerator::emitStrictScheduledProgram( const std::list<Token>& tokens, 
 				// Smart-tail substitution: if the last cycle has an empty
 				// lower lane, place the back-edge branch there to save a
 				// cycle (matches SCEI's last-cycle pairing).
-				const unsigned int lastCycle = bake->II - 1;
-				const bool substituteBranch =
-					( bake->II > 0 ) && ( bake->cycles[lastCycle].second == NULL );
+					const unsigned int lastCycle = bake->II - 1;
+					const bool substituteBranch =
+						bake->branchTok && ( bake->II > 0 )
+						&& ( bake->cycles[lastCycle].second == NULL );
 
 				for( unsigned int c = 0; c < bake->II; ++c )
 				{
@@ -2190,8 +2200,8 @@ bool CodeGenerator::emitStrictScheduledProgram( const std::list<Token>& tokens, 
 					}
 				}
 
-				if( !substituteBranch )
-					emitSingleToken( *bake->branchTok );
+					if( bake->branchTok && !substituteBranch )
+						emitSingleToken( *bake->branchTok );
 
 				// Advance past every slot up to (and including) the last
 				// slot whose firstToken or secondToken is one of the body

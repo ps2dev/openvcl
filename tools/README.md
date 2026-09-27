@@ -205,6 +205,36 @@ only after a renamed write has made that decision dirty and before a later base
 read needs it; this preserves pre-write live-ins and prevents stale-base reads.
 The flag is not enabled by default.
 
+`OPENVCL_EXPERIMENT_TWO_STAGE_REFIT_ENVELOPE=1` carries a structurally complete
+two-stage refit PROLOG/MAIN/DRAIN envelope to the experimental emitter, but the
+emitter has a hard register-safety gate: any non-zero final refit rename-hint
+count keeps the path dormant. For the corrected `indexed/xform_loop_lid`
+source-37 -> refit-44 candidate the gate currently sees 117 hints and six final
+VF rename families, so no real VSM is emitted by this experiment yet.
+
+`OPENVCL_EXPERIMENT_SOURCE_RENAME_SUBSET_SWEEP=1` is a diagnostic for that
+register-pressure problem. It tries every subset of the selected candidate's
+first-level rename decisions when there are at most eight, refits each resulting
+semantic stream, and reports final rename decision/assignment counts. If all
+final decisions are assignable it also reapplies them once and refits again as a
+closure probe. This is diagnostic only; it never selects production codegen.
+For the current indexed case the empty source subset reaches II=35 with five
+assignable final decisions, but the closure refit rises to II=49 with seven new
+decisions and only two assigned. That result is evidence for a proper
+modulo-variable-expansion/stage-rotation model, not permission to drop hazards.
+
+Reproduce the current two-stage safety boundary with:
+
+```sh
+make -C test/ps2/vu1_two_stage_refit_probe clean all
+```
+
+The probe verifies that the structural two-stage candidate still has unresolved
+final rename hazards, that one recursive rename/refit closure does not eliminate
+them, that no `__REFIT_MAIN` envelope is emitted, that the experimental/default
+VSM files remain byte-identical while blocked, and that both assemble with
+`dvp-as`.
+
 Validate that direct path with the extracted indexed transform-loop differential:
 
 ```sh
