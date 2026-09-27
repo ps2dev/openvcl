@@ -240,11 +240,13 @@ struct VuSoftwarePipelineSuffixStore
 //                       the cloneOrdinal-th element of the split sequence.
 //   RETARGET_DEST     — emit a whole-destination-safe source token with its
 //                       destination VF retargeted to decisionIndex's scratch.
-//   MATERIALIZE_MOVE  — synthesize a MOVE that materializes the rename
-//                       scratch for decisionIndex; emitted BEFORE the
+//   MATERIALIZE_MOVE  — synthesize a MOVE that materializes the dirty subset
+//                       (fieldMask, or the full decision when zero) of the
+//                       rename scratch for decisionIndex; emitted BEFORE the
 //                       corresponding cell's PASSTHROUGH op.
-//   TAIL_MOVE         — synthesize the post-iteration write-back MOVE for
-//                       decisionIndex; emitted AFTER all main-body cells.
+//   TAIL_MOVE         — synthesize the post-iteration write-back MOVE for the
+//                       dirty fieldMask subset of decisionIndex; emitted AFTER
+//                       all main-body cells.
 //
 // sourceCellIndex / sourceTokenIndex are NO_INDEX (-1u) for TAIL_MOVE.
 // decisionIndex is NO_INDEX for PASSTHROUGH / SPLIT_CLONE.
@@ -264,13 +266,18 @@ struct VuKernelRefitNode
 	unsigned int sourceTokenIndex;
 	unsigned int decisionIndex;
 	unsigned int cloneOrdinal;
+	// MATERIALIZE_MOVE / TAIL_MOVE may write only the subset of a coalesced
+	// rename decision that is currently dirty. Zero keeps the historical
+	// meaning of "all fields in the decision" for older descriptors/tests.
+	unsigned int fieldMask;
 
 	VuKernelRefitNode()
 		: role( ROLE_PASSTHROUGH ),
 		  sourceCellIndex( NO_INDEX ),
 		  sourceTokenIndex( NO_INDEX ),
 		  decisionIndex( NO_INDEX ),
-		  cloneOrdinal( 0 ) {}
+		  cloneOrdinal( 0 ),
+		  fieldMask( 0 ) {}
 };
 
 // Generic score used by the bounded exact-source candidate sweep. Selection is

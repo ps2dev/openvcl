@@ -50,7 +50,8 @@ VuModuloFeasibilityResult solveVuModuloFeasibility(
     unsigned int initiationInterval,
     const std::vector<VuModuloFeasibilityNode>& nodes,
     const std::vector<VuModuloFeasibilityEdge>& edges,
-    unsigned int maxStates );
+    unsigned int maxStates,
+    bool useGlobalResourceMatching = false );
 
 } // namespace vcl
 

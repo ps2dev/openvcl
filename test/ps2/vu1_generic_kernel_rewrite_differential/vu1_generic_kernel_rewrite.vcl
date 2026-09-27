@@ -7,12 +7,13 @@
 	--endenter
 
 	iaddiu next_index, vi00, 16
-	iaddiu last_index, vi00, 18
+	ilw.x last_index, 301(vi00)
 	iaddiu first_index_mask, vi00, 0xff
 	iaddiu input_start, vi00, 64
 	iaddiu color_start, vi00, 160
 	iaddiu next_output, vi00, 224
 	iaddiu do_clipping, vi00, 0
+	iaddiu matrix_start, vi00, 304
 	loi 3.0
 	maxi.z index_constants, vf00, i
 	loi 255.0
@@ -27,10 +28,10 @@
 	loi 1.0
 	maxi.xyz clip_scales, vf00, i
 	maxi.w clip_scales, vf00, i
-	maxw.xyzw vert_xform_0, vf00, vf00
-	maxw.xyzw vert_xform_1, vf00, vf00
-	maxw.xyzw vert_xform_2, vf00, vf00
-	maxw.xyzw vert_xform_3, vf00, vf00
+	lq vert_xform_0, 0(matrix_start)
+	lq vert_xform_1, 1(matrix_start)
+	lq vert_xform_2, 2(matrix_start)
+	lq vert_xform_3, 3(matrix_start)
 xform_loop_lid: --LoopCS 1,3
  ; get first index
  ilw.w first_index, 0(next_index)

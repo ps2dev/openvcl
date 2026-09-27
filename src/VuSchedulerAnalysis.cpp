@@ -6604,11 +6604,16 @@ namespace
 	// <field> is derived from the decision's reg suffix (e.g. "VF13.w"
 	// -> W); if no suffix, defaults to XYZW. The donor token supplies
 	// source-position metadata only; its arguments are discarded.
-	Token makeKernelRenameMoveToken( const Token& donor, const VuKernelRenameDecision& decision )
+	Token makeKernelRenameMoveToken( const Token& donor,
+	                                const VuKernelRenameDecision& decision,
+	                                unsigned int requestedFieldMask = 0 )
 	{
-		const unsigned int fieldMask = decisionRegFieldMask( decision.reg ) != 0
-		                                   ? decisionRegFieldMask( decision.reg )
-		                                   : (Token::X | Token::Y | Token::Z | Token::W);
+		const unsigned int decisionMask = decisionRegFieldMask( decision.reg ) != 0
+		                                      ? decisionRegFieldMask( decision.reg )
+		                                      : (Token::X | Token::Y | Token::Z | Token::W);
+		const unsigned int fieldMask = requestedFieldMask != 0
+		                                 ? ( requestedFieldMask & decisionMask )
+		                                 : decisionMask;
 		const std::string  dstBase   = decisionRegBase( decision.reg );
 
 		Token token( donor );
@@ -7822,46 +7827,88 @@ namespace
 		};
 		Role         role;
 		unsigned int sourceCellIndex;   // index into plan.kernelRewriteMainTokens; -1u for TAIL_MOVE
-		unsigned int sourceTokenIndex;  // index into indexedTokens;                -1u for TAIL_MOVE
-		unsigned int decisionIndex;     // index into plan.kernelRewriteRenameDecisions; -1u for plain passthrough/split
-		unsigned int cloneOrdinal;      // 0-based ordinal within a SPLIT_CLONE group
-	};
+			unsigned int sourceTokenIndex;  // index into indexedTokens;                -1u for TAIL_MOVE
+			unsigned int decisionIndex;     // index into plan.kernelRewriteRenameDecisions; -1u for plain passthrough/split
+			unsigned int cloneOrdinal;      // 0-based ordinal within a SPLIT_CLONE group
+			unsigned int fieldMask;         // materialize/tail MOVE subset; 0 for other roles
+		};
 
-	// Track 9.G-1h step 4b-8a: live-range narrowing for materialize
-	// MOVEs. Returns true iff `token` has any FLOAT_REGISTER argument
-	// whose base register key equals `base`. Used to skip emission of
-	// a per-decision materialize MOVE before a soft-blocker token that
-	// does not actually reference that decision's original base — i.e.
-	// for stores like `sq A, ofs(vi)`, only one of the N rename
-	// decisions touches `A` and the others should not get spurious
-	// scratch->base MOVEs. The materialize-candidate gate already
-	// excludes WRITEs of any decision base, so any match here is a
-	// READ (the only case where a pre-token MOVE is semantically
-	// required).
-	bool tokenReadsDecisionBase( const Token& token, const std::string& decisionReg )
+		// Track 9.G-1h step 4b-8a: live-range narrowing for materialize
+		// MOVEs. Returns true iff `token` actually READS the decision's
+		// architectural VF base. WRITE arguments are ignored explicitly:
+		// expanded-refit synthesis uses this for stateful scratch->base
+		// materialization before any later consumer, while the older generic
+		// emitter also uses it to avoid unrelated soft-blocker MOVEs.
+	unsigned int tokenReadDecisionFields( const Token& token, const std::string& decisionReg )
 	{
 		const std::string base = registerBaseKey( decisionReg );
+		unsigned int decisionMask = decisionRegFieldMask( decisionReg );
+		if( decisionMask == 0 ) decisionMask = Token::X | Token::Y | Token::Z | Token::W;
+		unsigned int readMask = 0;
 		for( std::list<Token::Argument>::const_iterator a = token.arguments().begin();
 		     a != token.arguments().end(); ++a )
 		{
 			if( a->type() != Token::Argument::FLOAT_REGISTER )
 				continue;
+			if( a->flags() & Token::Argument::WRITE )
+				continue;
 			std::string key;
 			if( !vuRegisterKey( *a, key ) )
 				continue;
 			if( registerBaseKey( key ) == base )
-				return true;
+				readMask |= vuReadFieldMask( token, *a );
 		}
-		return false;
+		return readMask & decisionMask;
+	}
+
+	bool tokenReadsDecisionBase( const Token& token, const std::string& decisionReg )
+	{
+		return tokenReadDecisionFields( token, decisionReg ) != 0;
+	}
+
+	unsigned int tokenWriteDecisionFields( const Token& token, const std::string& decisionReg )
+	{
+		const std::string base = registerBaseKey( decisionReg );
+		unsigned int decisionMask = decisionRegFieldMask( decisionReg );
+		if( decisionMask == 0 ) decisionMask = Token::X | Token::Y | Token::Z | Token::W;
+		unsigned int writeMask = 0;
+		for( std::list<Token::Argument>::const_iterator a = token.arguments().begin();
+		     a != token.arguments().end(); ++a )
+		{
+			if( a->type() != Token::Argument::FLOAT_REGISTER )
+				continue;
+			if( ( a->flags() & Token::Argument::WRITE ) == 0 )
+				continue;
+			std::string key;
+			if( !vuRegisterKey( *a, key ) || registerBaseKey( key ) != base )
+				continue;
+			writeMask |= vuWriteFieldMask( token, *a );
+		}
+		return writeMask & decisionMask;
+	}
+
+	unsigned int drainReadDecisionFields(
+		const VuSoftwarePipelineRewritePlan& plan,
+		const std::vector<const Token*>& indexedTokens,
+		const std::string& decisionReg )
+	{
+		unsigned int fields = 0;
+		for( std::vector<unsigned int>::const_iterator dt = plan.kernelRewriteDrainTokens.begin();
+		     dt != plan.kernelRewriteDrainTokens.end(); ++dt )
+		{
+			if( *dt >= indexedTokens.size() ) continue;
+			fields |= tokenReadDecisionFields( *indexedTokens[*dt], decisionReg );
+		}
+		return fields;
 	}
 
 	// Track 9.G-1h step 4b-8b: tail-MOVE coalescing. Returns true iff any
 	// drain token in the plan reads the decision's original base register.
 	// Used to skip emission of the tail scratch->base MOVE for decisions
-	// whose renamed value is dead at loop exit: in-loop reads of the base
-	// are already handled by pre-soft-blocker materialize MOVEs (see
-	// 4b-8a), so the tail MOVE is only required to keep the base live for
-	// drain-stage consumers.
+		// whose renamed value is dead at loop exit: expanded-refit in-loop reads
+		// are handled by the stateful dirty/materialize logic (see 4b-8a), so
+		// the tail MOVE is only required to keep a still-dirty base live for
+		// drain-stage consumers.
 	bool drainReadsDecisionBase(
 		const VuSoftwarePipelineRewritePlan& plan,
 		const std::vector<const Token*>&     indexedTokens,
@@ -7886,6 +7933,12 @@ namespace
 		out.clear();
 		const unsigned int NO_CELL = static_cast<unsigned int>( -1 );
 		const unsigned int NO_DEC  = static_cast<unsigned int>( -1 );
+		// kernelRewriteMainTokens is a placement grid, not program order. The
+		// precise DDG builder below classifies carried dependencies from sequence
+		// order, so feeding it the already-scheduled grid can turn an original
+		// same-iteration RAW into a synthetic distance=1 recurrence. Expand in
+		// original token order and retain the grid cell only as placement metadata.
+		std::vector< std::pair<unsigned int, unsigned int> > orderedCells;
 		for( unsigned int m = 0; m < plan.kernelRewriteMainTokens.size(); ++m )
 		{
 			const unsigned int idx = plan.kernelRewriteMainTokens[m];
@@ -7893,7 +7946,45 @@ namespace
 				continue;
 			if( idx >= indexedTokens.size() )
 				continue;
+			orderedCells.push_back( std::make_pair( idx, m ) );
+		}
+		std::sort( orderedCells.begin(), orderedCells.end() );
+		std::vector<unsigned int> decisionDirtyMask(
+		    plan.kernelRewriteRenameDecisions.size(), 0u );
+
+		for( unsigned int ordered = 0; ordered < orderedCells.size(); ++ordered )
+		{
+			const unsigned int idx = orderedCells[ordered].first;
+			const unsigned int m = orderedCells[ordered].second;
 			const Token& src = *indexedTokens[idx];
+			// Keep source operands on the architectural base. Once a renamed write
+			// has made scratch authoritative, materialize it before the next read of
+			// that base. This is deliberately more conservative than retargeting a
+			// source operand blindly: an in-place op may read a live-in base before
+			// the first renamed write, while later reads must observe scratch.
+			for( unsigned int d = 0; d < plan.kernelRewriteRenameDecisions.size(); ++d )
+			{
+				if( !plan.kernelRewriteRenameDecisions[d].assigned )
+					continue;
+				const unsigned int materializeMask = decisionDirtyMask[d]
+				    & tokenReadDecisionFields( src, plan.kernelRewriteRenameDecisions[d].reg );
+				if( materializeMask == 0 ) continue;
+				VuKernelExpandedNode n;
+				n.role             = VuKernelExpandedNode::ROLE_MATERIALIZE_MOVE;
+				n.sourceCellIndex  = m;
+				n.sourceTokenIndex = idx;
+				n.decisionIndex    = d;
+				n.cloneOrdinal     = 0;
+				n.fieldMask        = materializeMask;
+				out.push_back( n );
+				decisionDirtyMask[d] &= ~materializeMask;
+			}
+			for( unsigned int d = 0; d < plan.kernelRewriteRenameDecisions.size(); ++d )
+			{
+				if( plan.kernelRewriteRenameDecisions[d].assigned )
+					decisionDirtyMask[d] |= tokenWriteDecisionFields(
+					    src, plan.kernelRewriteRenameDecisions[d].reg );
+			}
 			unsigned int retargetDecision = static_cast<unsigned int>( -1 );
 			if( findWholeDestinationKernelRenameDecision(
 			        src, plan.kernelRewriteRenameDecisions, retargetDecision ) )
@@ -7904,34 +7995,8 @@ namespace
 				n.sourceTokenIndex = idx;
 				n.decisionIndex    = retargetDecision;
 				n.cloneOrdinal     = 0;
+				n.fieldMask        = 0;
 				out.push_back( n );
-				continue;
-			}
-			if( tokenIsKernelRenameMaterializeCandidate( src, plan ) )
-			{
-				for( unsigned int d = 0; d < plan.kernelRewriteRenameDecisions.size(); ++d )
-				{
-					if( !plan.kernelRewriteRenameDecisions[d].assigned )
-						continue;
-					// 4b-8a: only materialize decisions whose original
-					// base is actually read by this soft-blocker token.
-					if( !tokenReadsDecisionBase( src, plan.kernelRewriteRenameDecisions[d].reg ) )
-						continue;
-					VuKernelExpandedNode n;
-					n.role             = VuKernelExpandedNode::ROLE_MATERIALIZE_MOVE;
-					n.sourceCellIndex  = m;
-					n.sourceTokenIndex = idx;
-					n.decisionIndex    = d;
-					n.cloneOrdinal     = 0;
-					out.push_back( n );
-				}
-				VuKernelExpandedNode p;
-				p.role             = VuKernelExpandedNode::ROLE_PASSTHROUGH;
-				p.sourceCellIndex  = m;
-				p.sourceTokenIndex = idx;
-				p.decisionIndex    = NO_DEC;
-				p.cloneOrdinal     = 0;
-				out.push_back( p );
 				continue;
 			}
 			std::list<Token> split;
@@ -7947,6 +8012,7 @@ namespace
 					n.sourceTokenIndex = idx;
 					n.decisionIndex    = NO_DEC;
 					n.cloneOrdinal     = ord;
+					n.fieldMask        = 0;
 					out.push_back( n );
 				}
 			}
@@ -7958,19 +8024,22 @@ namespace
 				p.sourceTokenIndex = idx;
 				p.decisionIndex    = NO_DEC;
 				p.cloneOrdinal     = 0;
+				p.fieldMask        = 0;
 				out.push_back( p );
 			}
 		}
 		for( unsigned int d = 0; d < plan.kernelRewriteRenameDecisions.size(); ++d )
 		{
-			if( !plan.kernelRewriteRenameDecisions[d].assigned )
+			if( !plan.kernelRewriteRenameDecisions[d].assigned || decisionDirtyMask[d] == 0 )
 				continue;
 			// 4b-8b: only emit tail MOVE for decisions whose base is
 			// read by a drain token. In-loop reads of the base are
 			// covered by per-soft-blocker materialize MOVEs (4b-8a);
 			// if drain doesn't read the base, the renamed value is
 			// dead at loop exit.
-			if( !drainReadsDecisionBase( plan, indexedTokens, plan.kernelRewriteRenameDecisions[d].reg ) )
+			const unsigned int tailMask = decisionDirtyMask[d]
+			    & drainReadDecisionFields( plan, indexedTokens, plan.kernelRewriteRenameDecisions[d].reg );
+			if( tailMask == 0 )
 				continue;
 			VuKernelExpandedNode n;
 			n.role             = VuKernelExpandedNode::ROLE_TAIL_MOVE;
@@ -7978,6 +8047,7 @@ namespace
 			n.sourceTokenIndex = static_cast<unsigned int>( -1 );
 			n.decisionIndex    = d;
 			n.cloneOrdinal     = 0;
+			n.fieldMask        = tailMask;
 			out.push_back( n );
 		}
 	}
@@ -8184,7 +8254,9 @@ namespace
 	    unsigned int exactMaxStagesOverride = 0u,
 	    bool forceExactFeasibility = false,
 	    bool requireExactWitness = false,
-	    unsigned int forcedExactTailTokenIndex = VU_SCHEDULED_TOKEN_INDEX_NONE )
+	    unsigned int forcedExactTailTokenIndex = VU_SCHEDULED_TOKEN_INDEX_NONE,
+	    bool useExactGlobalResourceMatching = false,
+	    unsigned int maximumII = 0u )
 	{
 			// Track 9.G step 4d: iterative modulo placement (diagnostic).
 			// Drive the priority order into the Modulo Reservation Table.
@@ -8228,6 +8300,15 @@ namespace
 				unsigned int iiCap = miiStart > std::numeric_limits<unsigned int>::max() - 32u
 				                     ? std::numeric_limits<unsigned int>::max()
 				                     : miiStart + 32u;
+				if( maximumII > 0u && maximumII < iiCap )
+					iiCap = maximumII;
+				// Some consumers only care about schedules that can beat an existing
+				// II. If the resource/recurrence lower bound is already above their
+				// ceiling, no placement can satisfy that profitability constraint.
+				// Return before building the O(N^2) precise edge set or entering the
+				// retry loop. Diagnostic/exact candidate sweeps pass maximumII=0.
+				if( iiCap < miiStart )
+					return;
 				unsigned int tryII = miiStart;
 				unsigned int bumps = 0;
 				const bool exactFeasibility = usePreciseRenamedRecMII
@@ -8492,7 +8573,7 @@ namespace
 				lowerOccFinal = mrt.lowerOccupancy();
 				fdivOccFinal  = mrt.fdivOccupancy();
 				efuOccFinal   = mrt.efuOccupancy();
-				if( failedCount > 0 && usePreciseRenamedRecMII
+				if( ( failedCount > 0 || requireExactWitness ) && usePreciseRenamedRecMII
 				    && std::getenv( "OPENVCL_DUMP_MODULO_FEASIBILITY_PROBLEM" ) != NULL )
 				{
 					std::cerr << "[modulo-feasibility-problem] loop=" << opportunity.label
@@ -8800,7 +8881,8 @@ namespace
 							}
 						}
 						const VuModuloFeasibilityResult exact =
-						    solveVuModuloFeasibility( tryII, exactNodes, exactEdges, maxStates );
+						    solveVuModuloFeasibility( tryII, exactNodes, exactEdges, maxStates,
+						                              useExactGlobalResourceMatching );
 						const char* status = exact.status == VuModuloFeasibilityResult::SAT ? "SAT"
 						                   : exact.status == VuModuloFeasibilityResult::UNSAT ? "UNSAT"
 						                   : "UNKNOWN";
@@ -10037,6 +10119,57 @@ namespace
 		return count;
 	}
 
+	static bool kernelRewriteScaffoldingRequested()
+	{
+		// The kernel-rewrite placer is an experimental/diagnostic subsystem.
+		// Default software-pipeline emission does not consume its fields, so do
+		// not make every normal compile pay for it. Keep the existing individual
+		// diagnostics working when explicitly requested.
+		static const char* const envs[] = {
+			"OPENVCL_USE_GENERIC_KERNEL_REWRITE",
+			"OPENVCL_USE_EXPANDED_DDG_PLACER",
+			"OPENVCL_EXPERIMENT_EXACT_FEASIBILITY_PLACER",
+			"OPENVCL_EXPERIMENT_EXACT_EXPANDED_DDG_REFIT",
+			"OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION",
+			"OPENVCL_DUMP_LOOP_SCHEDULE",
+			"OPENVCL_DUMP_KERNEL_LAYOUT",
+			"OPENVCL_DUMP_KERNEL_LAYOUT_ENTRIES",
+			"OPENVCL_DUMP_KERNEL_TEMPLATE",
+			"OPENVCL_DUMP_KERNEL_TEMPLATE_SLOTS",
+			"OPENVCL_DUMP_KERNEL_ENVELOPE",
+			"OPENVCL_DUMP_KERNEL_ENVELOPE_COPIES",
+			"OPENVCL_DUMP_KERNEL_ENVELOPE_ROWS",
+			"OPENVCL_DUMP_KERNEL_REGISTER_PLAN",
+			"OPENVCL_DUMP_KERNEL_REGISTER_PLAN_HAZARDS",
+			"OPENVCL_DUMP_KERNEL_REGISTER_CROSSCHECK",
+			"OPENVCL_DUMP_KERNEL_REGISTER_CROSSCHECK_DETAIL",
+			"OPENVCL_DUMP_KERNEL_RENAME_HINTS",
+			"OPENVCL_DUMP_KERNEL_RENAME_HINTS_DETAIL",
+			"OPENVCL_DUMP_KERNEL_REWRITE_PLAN",
+			"OPENVCL_DUMP_KERNEL_REWRITE_PLAN_STAGES",
+			"OPENVCL_DUMP_KERNEL_REWRITE_PLAN_DETAIL",
+			"OPENVCL_DUMP_KERNEL_REWRITE_COVERAGE",
+			"OPENVCL_DUMP_KERNEL_REWRITE_ORDER",
+			"OPENVCL_DUMP_KERNEL_REWRITE_ORDER_TOKENS",
+			"OPENVCL_DUMP_KERNEL_GRID_LATENCY",
+			"OPENVCL_DUMP_KERNEL_GRID_LATENCY_DETAIL",
+			"OPENVCL_DUMP_EXPANDED_NODES",
+			"OPENVCL_DUMP_KERNEL_REWRITE_PROPAGATION",
+			"OPENVCL_DUMP_KERNEL_RENAME_DECISIONS",
+			"OPENVCL_DUMP_KERNEL_RENAME_DECISIONS_DETAIL",
+			"OPENVCL_DUMP_KERNEL_RENAME_MOVE_SLOTS",
+			"OPENVCL_DUMP_KERNEL_RENAME_MOVE_SLOTS_DETAIL",
+			"OPENVCL_DUMP_KERNEL_REGPLAN_PROPAGATION",
+			"OPENVCL_DUMP_KERNEL_ENVELOPE_PROPAGATION",
+			"OPENVCL_DUMP_KERNEL_STAGECELLS_PROPAGATION",
+			"OPENVCL_DUMP_KERNEL_RENAME_EMISSION_ELIGIBILITY",
+			"OPENVCL_DUMP_KERNEL_RENAME_EMISSION_EXPANSION"
+		};
+		for( unsigned int i = 0; i < sizeof(envs) / sizeof(envs[0]); ++i )
+			if( std::getenv( envs[i] ) != NULL ) return true;
+		return false;
+	}
+
 	static void runExpandedDDGRefitDiagnostic(
 	    VuLoopPipelineOpportunity& opportunity,
 	    const std::vector<const Token*>& indexedTokens,
@@ -10044,7 +10177,8 @@ namespace
 	    bool forceExactExpandedRefit = false,
 	    unsigned int exactMaxStatesOverride = 0u,
 	    unsigned int exactMaxStagesOverride = 0u,
-	    bool forceBranchAtTail = false )
+	    bool forceBranchAtTail = false,
+	    unsigned int maximumRefitII = 0u )
 	{
 		if( !opportunity.simpleCountedLoop )
 			return;
@@ -10196,7 +10330,8 @@ namespace
 					if( n.decisionIndex >= opportunity.kernelRewriteRenameDecisions.size() )
 						break;
 					Token mv = makeKernelRenameMoveToken(
-					    *donor, opportunity.kernelRewriteRenameDecisions[n.decisionIndex] );
+					    *donor, opportunity.kernelRewriteRenameDecisions[n.decisionIndex],
+					    n.fieldMask );
 					shadowOwned.push_back( mv );
 					const unsigned int newIdx = static_cast<unsigned int>( shadowIndexed.size() );
 					shadowIndexed.push_back( &shadowOwned.back() );
@@ -10234,7 +10369,9 @@ namespace
 		                                 /*forceExactFeasibility=*/forceExactExpandedRefit,
 		                                 /*requireExactWitness=*/forceBranchAtTail,
 		                                 forceBranchAtTail ? opportunity.branchTokenIndex
-		                                                   : VU_SCHEDULED_TOKEN_INDEX_NONE );
+		                                                   : VU_SCHEDULED_TOKEN_INDEX_NONE,
+		                                 /*useExactGlobalResourceMatching=*/forceBranchAtTail,
+		                                 maximumRefitII );
 
 		// Track 9.G-1h step 4b-3b-4: publish scalar refit metrics back to
 		// the caller's opportunity so downstream consumers (4b-3b-5
@@ -10280,6 +10417,7 @@ namespace
 				dst.sourceTokenIndex = src.sourceTokenIndex;
 				dst.decisionIndex    = src.decisionIndex;
 				dst.cloneOrdinal     = src.cloneOrdinal;
+				dst.fieldMask        = src.fieldMask;
 				opportunity.kernelRewriteRefitNodes.push_back( dst );
 			}
 			const bool prologOk = translateShadowRefitGrid(
@@ -11553,18 +11691,44 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 			}
 		}
 
-		// Track 9.G step 8a: the modulo placer + 6a-6h kernel-rewrite
-		// scaffolding always runs when the loop is a simple counted loop
-		// with a non-empty body. The OPENVCL_DUMP_LOOP_SCHEDULE env var
-		// (and the nested OPENVCL_DUMP_KERNEL_* gates) now only control
-		// the std::cerr writes; the computation itself is unconditional
-		// so OPENVCL_USE_GENERIC_KERNEL_REWRITE can see real scaffolding
-		// on production builds.
+		// Track 9.G step 8a: kernel-rewrite scaffolding is consumed only by
+		// the experimental generic-kernel emitter and its diagnostics. Keep the
+		// whole placer dormant for ordinary compilation; when requested, run the
+		// base placer first and the still-more-expensive expanded refit only for
+		// consumers that need the latter's descriptors.
 		if( opportunity.simpleCountedLoop
-		    && !opportunity.mainTokenIndices.empty() )
+		    && !opportunity.mainTokenIndices.empty()
+		    && kernelRewriteScaffoldingRequested() )
 		{
 			runVuKernelPlacerAndScaffolding( opportunity, indexedTokens, tokens );
-			runExpandedDDGRefitDiagnostic( opportunity, indexedTokens, tokens );
+			const bool needsExpandedRefit =
+			    std::getenv( "OPENVCL_USE_GENERIC_KERNEL_REWRITE" ) != NULL
+			    || std::getenv( "OPENVCL_USE_EXPANDED_DDG_PLACER" ) != NULL
+			    || std::getenv( "OPENVCL_EXPERIMENT_EXACT_EXPANDED_DDG_REFIT" ) != NULL
+			    || std::getenv( "OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION" ) != NULL;
+			if( needsExpandedRefit )
+			{
+				const bool exactExpandedRefit =
+				    std::getenv( "OPENVCL_EXPERIMENT_EXACT_EXPANDED_DDG_REFIT" ) != NULL;
+				if( exactExpandedRefit )
+					runExpandedDDGRefitDiagnostic( opportunity, indexedTokens, tokens );
+				else if( opportunity.kernelRewriteII > 1u )
+				{
+					// The ordinary emitter publishes a refit only when it strictly beats
+					// the source placement. There is no value in spending up to 32 II
+					// retries proving how much worse an expanded refit is. Bound the
+					// shadow search to the last II that could pass that gate. The exact
+					// candidate-sweep path below deliberately remains uncapped because it
+					// ranks post-expansion candidates even when expansion grows the II.
+					runExpandedDDGRefitDiagnostic(
+					    opportunity, indexedTokens, tokens,
+					    /*forceExactExpandedRefit=*/false,
+					    /*exactMaxStatesOverride=*/0u,
+					    /*exactMaxStagesOverride=*/0u,
+					    /*forceBranchAtTail=*/false,
+					    opportunity.kernelRewriteII - 1u );
+				}
+			}
 		}
 
 		if( std::getenv( "OPENVCL_DUMP_MULTISTAGE_CANDIDATES" ) != NULL )
@@ -12602,6 +12766,16 @@ namespace
 			      || node.role == VuKernelRefitNode::ROLE_MATERIALIZE_MOVE
 			      || node.role == VuKernelRefitNode::ROLE_TAIL_MOVE )
 			    && node.decisionIndex >= plan.kernelRewriteRenameDecisions.size() ) return false;
+			if( ( node.role == VuKernelRefitNode::ROLE_MATERIALIZE_MOVE
+			      || node.role == VuKernelRefitNode::ROLE_TAIL_MOVE )
+			    && node.fieldMask != 0 )
+			{
+				unsigned int decisionMask = decisionRegFieldMask(
+				    plan.kernelRewriteRenameDecisions[node.decisionIndex].reg );
+				if( decisionMask == 0 ) decisionMask = Token::X | Token::Y | Token::Z | Token::W;
+				if( ( node.fieldMask & decisionMask ) == 0
+				    || ( node.fieldMask & ~decisionMask ) != 0 ) return false;
+			}
 		}
 		if( branchNode == VuKernelRefitNode::NO_INDEX ) return false;
 		const unsigned int tailBranchCell = ( plan.kernelRewriteRefitII - 1u ) * 4u + 1u;
@@ -12630,7 +12804,7 @@ namespace
 		case VuKernelRefitNode::ROLE_TAIL_MOVE:
 		{
 			Token move = makeKernelRenameMoveToken(
-			    donor, plan.kernelRewriteRenameDecisions[node.decisionIndex] );
+			    donor, plan.kernelRewriteRenameDecisions[node.decisionIndex], node.fieldMask );
 			// The expanded-DDG model schedules synthetic rename MOVEs on the
 			// lower pipe. Prevent CodeGenerator's optional MOVE->upper-MAX
 			// substitution so the emitted instruction stays on the modeled lane.

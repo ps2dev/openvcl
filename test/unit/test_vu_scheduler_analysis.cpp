@@ -4514,6 +4514,18 @@ namespace
         return -1;
     }
 
+    int firstSourceRegNumber(const vcl::Token& token)
+    {
+        for (std::list<vcl::Token::Argument>::const_iterator a = token.arguments().begin();
+             a != token.arguments().end(); ++a)
+        {
+            if (a->type() != vcl::Token::Argument::FLOAT_REGISTER) continue;
+            if ((a->flags() & vcl::Token::Argument::WRITE) != 0) continue;
+            return a->regNumber();
+        }
+        return -1;
+    }
+
     unsigned int destFields(const vcl::Token& token)
     {
         for (std::list<vcl::Token::Argument>::const_iterator a = token.arguments().begin();
@@ -4657,6 +4669,7 @@ TEST_CASE("VuSchedulerAnalysis 8b-2c-1: splitMultiFieldOpByFieldDecisions full-m
         CHECK(stripOpSuffix(i->name()) == "add");
         CHECK(destFields(*i) == bits[idx]);
         CHECK(destRegNumber(*i) == expectedRegs[idx]);
+        CHECK(firstSourceRegNumber(*i) == 13);
     }
 }
 
@@ -4778,6 +4791,185 @@ TEST_CASE("VuSchedulerAnalysis 8b-2e: splitMultiFieldOpByFieldDecisions clears m
             CHECK((af == 0 || singleBit));
         }
     }
+}
+
+TEST_CASE("VuSchedulerAnalysis: direct refit keeps self-read source on architectural base")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("ftoi4.xyz vf08, vf08"));
+    REQUIRE(program.parse("ibne vi02, vi03, loop_lid"));
+    REQUIRE(program.parse("done_lid:"));
+
+    vcl::VuSoftwarePipelineRewritePlan plan;
+    plan.label = "loop_lid";
+    plan.labelTokenIndex = 0u;
+    plan.branchTokenIndex = 2u;
+    plan.directSelfContainedRefit = true;
+    plan.kernelRewriteRefitII = 1u;
+    plan.kernelRewriteRefitStageCount = 1u;
+
+    vcl::VuKernelRenameDecision decision;
+    decision.reg = "VF08.xyz";
+    decision.scratch = "VF31";
+    decision.assigned = true;
+    plan.kernelRewriteRenameDecisions.push_back(decision);
+
+    vcl::VuKernelRefitNode body;
+    body.role = vcl::VuKernelRefitNode::ROLE_RETARGET_DEST;
+    body.sourceTokenIndex = 1u;
+    body.decisionIndex = 0u;
+    plan.kernelRewriteRefitNodes.push_back(body);
+    vcl::VuKernelRefitNode branch;
+    branch.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+    branch.sourceTokenIndex = 2u;
+    plan.kernelRewriteRefitNodes.push_back(branch);
+    plan.kernelRewriteRefitMainTokens.assign(4u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitMainTokens[0] = 0u;
+    plan.kernelRewriteRefitMainTokens[1] = 1u;
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans(1u, plan);
+    std::vector<vcl::VuKernelBlockRange> ranges;
+    const std::list<vcl::Token> output =
+        vcl::applyVuGenericKernelRewritePlans(program.tokenizer.tokens(), plans, ranges);
+
+    REQUIRE(ranges.size() == 1u);
+    const vcl::Token* converted = findFirstOpToken(output, "ftoi4");
+    REQUIRE(converted != NULL);
+    CHECK(destRegNumber(*converted) == 31);
+    CHECK(firstSourceRegNumber(*converted) == 8);
+}
+
+TEST_CASE("VuSchedulerAnalysis: direct refit can materialize a renamed value before a source read")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("lq.xyz vf23, 0(vi01)"));
+    REQUIRE(program.parse("mulq.xyz vf24, vf23, q"));
+    REQUIRE(program.parse("ibne vi02, vi03, loop_lid"));
+    REQUIRE(program.parse("done_lid:"));
+
+    vcl::VuSoftwarePipelineRewritePlan plan;
+    plan.label = "loop_lid";
+    plan.labelTokenIndex = 0u;
+    plan.branchTokenIndex = 3u;
+    plan.directSelfContainedRefit = true;
+    plan.kernelRewriteRefitII = 2u;
+    plan.kernelRewriteRefitStageCount = 1u;
+
+    vcl::VuKernelRenameDecision decision;
+    decision.reg = "VF23.xyz";
+    decision.scratch = "VF31";
+    decision.assigned = true;
+    plan.kernelRewriteRenameDecisions.push_back(decision);
+
+    vcl::VuKernelRefitNode producer;
+    producer.role = vcl::VuKernelRefitNode::ROLE_RETARGET_DEST;
+    producer.sourceTokenIndex = 1u;
+    producer.decisionIndex = 0u;
+    plan.kernelRewriteRefitNodes.push_back(producer);
+    vcl::VuKernelRefitNode materialize;
+    materialize.role = vcl::VuKernelRefitNode::ROLE_MATERIALIZE_MOVE;
+    materialize.sourceTokenIndex = 2u;
+    materialize.decisionIndex = 0u;
+    plan.kernelRewriteRefitNodes.push_back(materialize);
+    vcl::VuKernelRefitNode consumer;
+    consumer.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+    consumer.sourceTokenIndex = 2u;
+    plan.kernelRewriteRefitNodes.push_back(consumer);
+    vcl::VuKernelRefitNode branch;
+    branch.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+    branch.sourceTokenIndex = 3u;
+    plan.kernelRewriteRefitNodes.push_back(branch);
+
+    plan.kernelRewriteRefitMainTokens.assign(8u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitMainTokens[0] = 0u;
+    plan.kernelRewriteRefitMainTokens[1] = 1u;
+    plan.kernelRewriteRefitMainTokens[4] = 2u;
+    plan.kernelRewriteRefitMainTokens[5] = 3u;
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans(1u, plan);
+    std::vector<vcl::VuKernelBlockRange> ranges;
+    const std::list<vcl::Token> output =
+        vcl::applyVuGenericKernelRewritePlans(program.tokenizer.tokens(), plans, ranges);
+
+    REQUIRE(ranges.size() == 1u);
+    const vcl::Token* load = findFirstOpToken(output, "lq");
+    const vcl::Token* move = findFirstOpToken(output, "move");
+    const vcl::Token* mulq = findFirstOpToken(output, "mulq");
+    REQUIRE(load != NULL);
+    REQUIRE(move != NULL);
+    REQUIRE(mulq != NULL);
+    CHECK(destRegNumber(*load) == 31);
+    CHECK(destRegNumber(*move) == 23);
+    CHECK(firstSourceRegNumber(*move) == 31);
+    CHECK(firstSourceRegNumber(*mulq) == 23);
+}
+
+TEST_CASE("VuSchedulerAnalysis: direct refit materializes only dirty rename fields")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("lq.x vf23, 0(vi01)"));
+    REQUIRE(program.parse("mulq.xyz vf24, vf23, q"));
+    REQUIRE(program.parse("ibne vi02, vi03, loop_lid"));
+    REQUIRE(program.parse("done_lid:"));
+
+    vcl::VuSoftwarePipelineRewritePlan plan;
+    plan.label = "loop_lid";
+    plan.labelTokenIndex = 0u;
+    plan.branchTokenIndex = 3u;
+    plan.directSelfContainedRefit = true;
+    plan.kernelRewriteRefitII = 2u;
+    plan.kernelRewriteRefitStageCount = 1u;
+
+    vcl::VuKernelRenameDecision decision;
+    decision.reg = "VF23.xy";
+    decision.scratch = "VF31";
+    decision.assigned = true;
+    plan.kernelRewriteRenameDecisions.push_back(decision);
+
+    vcl::VuKernelRefitNode producer;
+    producer.role = vcl::VuKernelRefitNode::ROLE_RETARGET_DEST;
+    producer.sourceTokenIndex = 1u;
+    producer.decisionIndex = 0u;
+    plan.kernelRewriteRefitNodes.push_back(producer);
+    vcl::VuKernelRefitNode materialize;
+    materialize.role = vcl::VuKernelRefitNode::ROLE_MATERIALIZE_MOVE;
+    materialize.sourceTokenIndex = 2u;
+    materialize.decisionIndex = 0u;
+    materialize.fieldMask = vcl::Token::X;
+    plan.kernelRewriteRefitNodes.push_back(materialize);
+    vcl::VuKernelRefitNode consumer;
+    consumer.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+    consumer.sourceTokenIndex = 2u;
+    plan.kernelRewriteRefitNodes.push_back(consumer);
+    vcl::VuKernelRefitNode branch;
+    branch.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+    branch.sourceTokenIndex = 3u;
+    plan.kernelRewriteRefitNodes.push_back(branch);
+
+    plan.kernelRewriteRefitMainTokens.assign(8u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitMainTokens[0] = 0u;
+    plan.kernelRewriteRefitMainTokens[1] = 1u;
+    plan.kernelRewriteRefitMainTokens[4] = 2u;
+    plan.kernelRewriteRefitMainTokens[5] = 3u;
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans(1u, plan);
+    std::vector<vcl::VuKernelBlockRange> ranges;
+    const std::list<vcl::Token> output =
+        vcl::applyVuGenericKernelRewritePlans(program.tokenizer.tokens(), plans, ranges);
+
+    REQUIRE(ranges.size() == 1u);
+    const vcl::Token* move = findFirstOpToken(output, "move");
+    REQUIRE(move != NULL);
+    CHECK(move->fields() == vcl::Token::X);
+    CHECK(destFields(*move) == vcl::Token::X);
+    CHECK(destRegNumber(*move) == 23);
+    CHECK(firstSourceRegNumber(*move) == 31);
 }
 
 // ---------------------------------------------------------------------------

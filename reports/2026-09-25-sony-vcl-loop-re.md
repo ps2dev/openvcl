@@ -203,51 +203,47 @@ from production codegen.
 ## Current conclusion
 
 OpenVCL's current II=46/47 placement result is demonstrably heuristic: its own
-DDG/MRT model admits a two-stage II=35 schedule. More importantly, evaluating
-several exact witnesses through the current rename + expanded-DDG model now
-finds a **37 -> 38** candidate that matches Sony's steady-state row count. The
-bounded global candidate search now performs that post-rename/refit selection
-automatically in diagnostic mode. The next boundary is no longer source-candidate
-selection itself but full prolog/kernel/drain emission and runtime validation
-before any production promotion. Reverse engineering remains useful for
-validating Sony's stopping criteria and later validation phases, not as a
-prerequisite for every scheduler change.
+source DDG/MRT model admits a two-stage II=35 schedule. An earlier version of the
+expanded-DDG experiment appeared to find a **37 -> 38** post-rename candidate
+matching Sony's steady-state row count. That comparison is now **invalidated**:
+the expanded node sequence was built by walking the already-scheduled placement
+grid, while the precise DDG derives same-iteration versus carried distance from
+sequence order. This could turn original `dist=0` RAW dependencies into synthetic
+`dist=1` recurrences and make the refit artificially compact.
 
-The completed OpenVCL validation keeps this conclusion diagnostic rather than a
-codegen claim: the full host suite passes, a fresh 13-renderer
-`candidate-sweep-001` baseline has no failures, and all 52 default/no-pipeline/
-kernel/expanded VSM outputs are bit-identical to `kernel-rewrite-safety-001`.
-Re-running the bounded sweep on that fresh baseline's `indexed_pp4.vcl` again
-reports II=35 SAT in 45 states / 2212 AC-3 revisions and selects 37 -> 38.
+The historical `candidate-sweep-001` run still establishes that the diagnostic
+sweep itself left all 52 default/no-pipeline/kernel/expanded VSM outputs
+bit-identical to `kernel-rewrite-safety-001`. Its 37 -> 38 post-refit number,
+however, predates the semantic-order fix and is superseded by the corrected
+measurements below.
 
-One additional structural result narrows the next OpenVCL experiment. After
-rename/materialization expansion, the selected 37 -> 38 candidate refits with
-`stageCount=1`: all 68 expanded nodes are covered exactly once by the 38-row MAIN
-grid, while the refit's PROLOG and DRAIN grids are empty. This does not prove
-semantic equivalence, but it means the next promotion experiment need not first
-invent a multi-stage refit envelope for this case; it can test a direct MAIN
-replacement while preserving the original branch/control semantics.
+After rebuilding expanded nodes in original semantic order, the same bounded
+source sweep produces **35 -> 49, 36 -> 49, 37 -> 44, 38 -> 48** and selects
+source II 37 -> refit II 44. The selected refit has two stages, 74 MAIN nodes,
+54 PROLOG nodes and 20 DRAIN nodes. The current OpenVCL model therefore no longer
+matches Sony's 38-row reference; the gap is again a genuine modeling/scheduling
+question rather than evidence that candidate selection alone solved it.
 
-That direct-emission experiment has now shown that the unconstrained 38-row
-result did **not** yet preserve all control-flow placement requirements. Its
-backedge lands at cycle 31 in the lower lane, rather than terminating the cyclic
-kernel. Once OpenVCL constrains the original branch to the final lower cell and
-requires a one-stage expanded refit, the candidate sequence becomes 35 -> 41,
-36 -> 41, **37 -> 39**, 38 -> 40. The 37-source candidate remains best, but the
-best directly representable OpenVCL kernel found by the bounded search is
-therefore 39 rows rather than 38. The branch-aware II=38 search for source II=37
-is still `UNKNOWN` after 200000 states (rather than proven `UNSAT`), so the
-current experiment has not established that a legal 38-row placement is
-impossible. This
-narrows the Sony question: its 38-row MAIN either represents control flow
-differently, folds the branch/delay semantics into a different accounting model,
-or satisfies a constraint that OpenVCL currently encodes more conservatively.
-The current evidence does not distinguish those possibilities.
+The direct-emission experiment also has a corrected interpretation. With the
+semantic-order DDG, the expanded refit for source II 37 has MII 44 before the
+single-stage branch-tail constraint is applied. Thus the old branch-aware II=38
+question is below the corrected model's own lower bound, not an `UNKNOWN` caused
+by insufficient search budget. The exact solver now optionally adds a
+Hall-style bipartite matching check for upper/lower modulo resources, but that
+global resource check is not the cause of this particular UNSAT result.
 
-The branch-aware 37 -> 39 route is implemented only behind
-`OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION=1`. A focused PCSX2 differential
-using the extracted `xform_loop_lid` body validates the emitted candidate against
-the conservative OpenVCL baseline: 12 output qwords and the final index/output
-pointers are bit-identical. The normal compiler path remains byte-identical over
-the 52 VSM corpus in `direct-refit-default-001`, so this runtime result does not
-yet constitute a production/default promotion.
+The one-stage direct route remains implemented only behind
+`OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION=1` as a semantic testbed. With
+the corrected DDG and conservative rename materialization its best indexed result
+is source 37 -> refit 66, not a performance candidate. Expanding the PCSX2
+differential exposed a second correctness issue: a renamed producer could leave
+its architectural base stale for a later consumer. OpenVCL now tracks dirty
+rename decisions and materializes scratch back to the base immediately before the
+next required read, without redirecting pre-write live-in reads to uninitialized
+scratch. The differential passes six cases from 1 through 8 loop iterations with
+varied index pairs, up to 48 output qwords and final loop pointers compared
+bit-for-bit. A fresh full corpus run (`corrected-refit-final-014`) has no failures
+and remains byte-identical to `direct-refit-default-001` for all 52 VSM outputs,
+with identical static-cost and `.vutext` summaries. The next meaningful experiment
+is therefore a semantically complete
+two-stage PROLOG/MAIN/DRAIN emitter for the corrected 37 -> 44 refit.

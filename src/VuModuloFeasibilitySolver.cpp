@@ -26,10 +26,12 @@ public:
     Solver( unsigned int ii,
             const std::vector<VuModuloFeasibilityNode>& nodes,
             const std::vector<VuModuloFeasibilityEdge>& edges,
-            unsigned int maxStates )
+            unsigned int maxStates,
+            bool useGlobalResourceMatching )
         : m_ii( ii ),
           m_nodes( nodes ),
           m_maxStates( maxStates ),
+          m_useGlobalResourceMatching( useGlobalResourceMatching ),
           m_states( 0 ),
           m_revisions( 0 ),
           m_exhausted( false )
@@ -207,6 +209,72 @@ private:
         return true;
     }
 
+    bool augmentResourceMatching( unsigned int node,
+                                  const Domains& domains,
+                                  std::vector<int>& residueOwner,
+                                  std::vector<bool>& seenResidues ) const
+    {
+        std::vector<bool> triedResidues( m_ii, false );
+        for( unsigned int v = 0; v < domains[node].size(); ++v )
+        {
+            const unsigned int residue = domains[node][v] % m_ii;
+            if( triedResidues[residue] || seenResidues[residue] ) continue;
+            triedResidues[residue] = true;
+            seenResidues[residue] = true;
+            if( residueOwner[residue] < 0
+                || augmentResourceMatching( static_cast<unsigned int>( residueOwner[residue] ),
+                                            domains,
+                                            residueOwner,
+                                            seenResidues ) )
+            {
+                residueOwner[residue] = static_cast<int>( node );
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool resourceMatchingFeasible( const Domains& domains, unsigned int pipe ) const
+    {
+        std::vector<unsigned int> pipeNodes;
+        for( unsigned int node = 0; node < m_nodes.size(); ++node )
+            if( m_nodes[node].pipe == pipe ) pipeNodes.push_back( node );
+        if( pipeNodes.size() > m_ii ) return false;
+
+        // Upper/lower instructions consume exactly one modulo residue. Pairwise
+        // AC-3 enforces unequal residues two nodes at a time, but cannot detect a
+        // Hall-set conflict such as three nodes whose domains contain only two
+        // residues. A bipartite matching is a necessary global resource check and
+        // therefore only prunes branches that cannot possibly satisfy the MRT.
+        std::sort( pipeNodes.begin(), pipeNodes.end(), DomainSizeLess( domains ) );
+        std::vector<int> residueOwner( m_ii, -1 );
+        for( unsigned int i = 0; i < pipeNodes.size(); ++i )
+        {
+            std::vector<bool> seenResidues( m_ii, false );
+            if( !augmentResourceMatching( pipeNodes[i], domains, residueOwner, seenResidues ) )
+                return false;
+        }
+        return true;
+    }
+
+    struct DomainSizeLess
+    {
+        explicit DomainSizeLess( const Domains& domains ) : domains( domains ) {}
+        bool operator()( unsigned int first, unsigned int second ) const
+        {
+            if( domains[first].size() != domains[second].size() )
+                return domains[first].size() < domains[second].size();
+            return first < second;
+        }
+        const Domains& domains;
+    };
+
+    bool globalResourceFeasible( const Domains& domains ) const
+    {
+        return resourceMatchingFeasible( domains, 1u )
+            && resourceMatchingFeasible( domains, 2u );
+    }
+
     unsigned int chooseNode( const Domains& domains ) const
     {
         unsigned int best = static_cast<unsigned int>( -1 );
@@ -263,6 +331,7 @@ private:
             return false;
         }
         ++m_states;
+        if( m_useGlobalResourceMatching && !globalResourceFeasible( current ) ) return false;
         const unsigned int node = chooseNode( current );
         if( node == static_cast<unsigned int>( -1 ) )
         {
@@ -289,6 +358,7 @@ private:
     unsigned int m_ii;
     const std::vector<VuModuloFeasibilityNode>& m_nodes;
     unsigned int m_maxStates;
+    bool m_useGlobalResourceMatching;
     unsigned int m_states;
     unsigned int m_revisions;
     bool m_exhausted;
@@ -302,11 +372,12 @@ VuModuloFeasibilityResult solveVuModuloFeasibility(
     unsigned int initiationInterval,
     const std::vector<VuModuloFeasibilityNode>& nodes,
     const std::vector<VuModuloFeasibilityEdge>& edges,
-    unsigned int maxStates )
+    unsigned int maxStates,
+    bool useGlobalResourceMatching )
 {
     if( initiationInterval == 0 || nodes.empty() || maxStates == 0 )
         return VuModuloFeasibilityResult();
-    Solver solver( initiationInterval, nodes, edges, maxStates );
+    Solver solver( initiationInterval, nodes, edges, maxStates, useGlobalResourceMatching );
     return solver.solve();
 }
 

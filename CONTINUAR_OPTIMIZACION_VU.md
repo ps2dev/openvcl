@@ -356,70 +356,65 @@ rename + expanded-DDG refit and select by the final refit result, rather than
 stopping at the first model-only SAT witness. Promotion to codegen still
 requires complete prolog/drain semantics and PCSX2 differential validation.
 
-That bounded sweep is now implemented behind
+That bounded sweep is implemented behind
 `OPENVCL_EXPERIMENT_EXACT_CANDIDATE_SWEEP=1`. It starts at the precise renamed
 MII, examines four source IIs by default (hard-capped at 16), skips by default
 loops whose source MII exceeds 64, limits the exact search to 5000 states per
 candidate, requires an exact source witness under a two-stage default cap, and
 runs each feasible candidate through rename + expanded-DDG refit. Candidate ranking is generic and
 deterministic: final refit II, final refit stage count, expanded/refit node count,
-then source II. On `indexed/xform_loop_lid` the automatic sweep reproduces
-35->41, 36->41, 37->38 and 38->40 and selects **37->38**. The sweep remains
-diagnostic and does not alter production/default codegen.
+then source II. The earlier 35->41, 36->41, 37->38, 38->40 result was later
+invalidated by a DDG-ordering bug described below; do not use those row counts as
+current scheduler evidence.
 
-The completed milestone validation rebuilds the current host tree and passes the
-full unit suite. A fresh `build/baselines/candidate-sweep-001` run completes all
-13 renderers in all four variants with no failures; its 52 VSM outputs are
-bit-identical to `kernel-rewrite-safety-001`, so the diagnostic sweep changes no
-production VSM size or static cost. Re-running the sweep on the freshly generated
-`indexed_pp4.vcl` independently reproduces II=35 SAT in 45 states / 2212 AC-3
-revisions and selects **source II=37 -> refit II=38**. The next boundary is full
-prolog/kernel/drain construction and semantic/runtime validation before any
-candidate can be promoted to real codegen.
+The historical `candidate-sweep-001` validation remains useful only for proving
+that the then-diagnostic experiment did not alter default output: all 52 VSM were
+bit-identical to `kernel-rewrite-safety-001`. Its reported 37->38 refit must not be
+treated as current evidence because that run predates the semantic-order DDG fix.
 
-The next diagnostic step preserves the complete expanded-refit envelope instead
-of publishing only MAIN. `kernelRewriteRefitPrologTokens`, `MainTokens` and
-`DrainTokens` now all use stable expanded-node indices after the shadow placer
-is destroyed. A generic `isVuKernelRefitSelfContained` predicate requires a
-single-stage, conflict-free refit with empty PROLOG/DRAIN and exact one-to-one
-coverage of every expanded node by the MAIN grid. The selected
-`indexed/xform_loop_lid` 37->38 candidate satisfies it: 68 nodes in a 38*4 MAIN
-grid, with zero refit PROLOG/DRAIN cells. This suggests a future direct-MAIN
-experimental emitter can be smaller than the earlier multi-stage envelope path,
-but no codegen route consumes this classification yet.
+The expanded-refit envelope remains fully preserved through stable expanded-node
+indices in `kernelRewriteRefitPrologTokens`, `MainTokens` and `DrainTokens`.
+However, the expanded node list must be built in original semantic token order,
+not the already-scheduled `kernelRewriteMainTokens` grid order. The precise DDG
+classifies an edge as same-iteration or carried from sequence order; feeding it
+placement order could turn a real `dist=0` RAW into a synthetic `dist=1`
+recurrence. With this corrected, the bounded indexed sweep is now **35->49,
+36->49, 37->44, 38->48**, selecting source 37 -> refit 44. The selected refit has
+two stages, 74 MAIN nodes, 54 PROLOG nodes and 20 DRAIN nodes, so the old
+single-stage 37->38 result is not valid evidence.
 
-The first direct-MAIN experiment exposed one missing control-flow constraint in
-that result. The unconstrained 37->38 refit places the loop backedge at cycle 31,
-lower lane; a direct cyclic kernel cannot emit that as-is because the backedge
-must terminate the steady-state body. The exact placer now has a generic optional
-tail-token domain constraint, and the direct experiment requires the branch in
-the final lower cell while limiting the expanded refit to one stage. Under that
-constraint the four source candidates become **35->41, 36->41, 37->39, 38->40**,
-so the best directly emit-able candidate found within the bounded search is
-**37->39**. The branch-aware II=38 refit for source II=37 remains `UNKNOWN` after
-both 5000 and 200000 search states (1,895,345 AC-3 revisions at the latter
-budget), not `UNSAT`; 39 is therefore not yet a proven lower bound. This is evidence that the
-earlier 38-row match with Sony was missing at least one control-flow constraint;
-it does not imply that Sony pays the same extra row, because its loop/control
-encoding may differ.
+The branch-tail experiment is still useful as a semantic harness, but no longer
+as the expected optimization route. Under the corrected semantic-order DDG the
+expanded source-37 refit already has MII 44 before the single-stage direct shape
+is imposed, so branch-aware II=38 is below the corrected model's own lower bound
+rather than `UNKNOWN` from search budget. A generic optional Hall-style bipartite matching check for upper/lower
+modulo residues was also added to the exact solver and is enabled for this
+branch-tail experiment; it catches global resource conflicts that pairwise AC-3
+cannot see, but it is not what makes this II=38 case fail.
 
-`OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION=1` now promotes only such a
-branch-tail, single-stage, conflict-free refit. It reconstructs the expanded
-rename nodes, reserves the final lower slot for the original backedge, and keeps
-synthetic rename MOVEs on the lower pipe (`PREORDERED`) so codegen cannot silently
-turn them into upper-pipe MAX instructions. The resulting real indexed VSM
-assembles; its `.vutext` is 2752 bytes versus 3440 for the current default indexed
-output. A permanent PCSX2 differential using the real `xform_loop_lid` body
-(`test/ps2/vu1_generic_kernel_rewrite_differential`) reports
-`VU1_DIFFERENTIAL_PASS generic-kernel-direct rows=12 index=18 output=236`: the
-candidate and conservative baseline match bit-for-bit over all 12 output qwords
-and final loop pointers. The default path remains isolated: the fresh
-`direct-refit-default-001` 13-renderer baseline has no failures and all 52 VSM,
-static-cost metrics and `.vutext` sizes are identical to `refit-envelope-001`.
-For the indexed program itself, the experimental VSM shrinks `.vutext` from 3440
-to 2752 bytes; the static cost model reports 41 estimated cycles per repeated
-`xform_loop_lid` block versus 139 for the current default. These remain model and
-size results, not PS2 hardware timing measurements.
+`OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION=1` remains opt-in and now serves
+mainly to validate the expanded rename semantics. Correct semantic ordering and
+conservative materialization increase the best single-stage indexed candidate to
+source 37 -> refit 66; the full VSM still assembles and is 2976 `.vutext` bytes
+versus 3440 for default, but II=66 is not a scheduling improvement worth
+promoting. Expanding the PCSX2 differential exposed a stale-base bug that the
+original one-case test had missed: after a renamed producer wrote scratch, a later
+consumer could still read the architectural base. The expanded model now tracks
+each rename decision as dirty and emits `scratch -> base` immediately before the
+next read that requires it, while leaving pre-write live-in reads on the base.
+The fixture now passes six cases spanning 1, 2, 3, 4, 6 and 8 iterations, varied
+index pairs, a non-degenerate identity transform, up to 48 output qwords and final
+loop pointers: `VU1_DIFFERENTIAL_PASS generic-kernel-direct cases=6 max-iterations=8`.
+The fresh `corrected-refit-final-014` corpus baseline is also complete with no
+failures: all 52 VSM files across default/no-pipeline/kernel/expanded, the static
+cost metrics and `.vutext` byte counts are identical to `direct-refit-default-001`.
+Therefore the semantic fixes and broader differential remain isolated from the
+default compiler output.
+
+The next scheduler milestone is therefore the complete **two-stage refit
+envelope** for the corrected source-37 -> refit-44 candidate: reconstruct and
+emit its PROLOG/MAIN/DRAIN semantics, then validate it independently. Do not try
+to promote the single-stage direct-MAIN experiment as a performance path.
 
 The shared PCSX2 differential runner also now consumes the emulator's stdout as
 unbuffered bytes. The previous `selectors` + `TextIO.readline()` combination could

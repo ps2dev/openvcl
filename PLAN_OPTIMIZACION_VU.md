@@ -340,53 +340,51 @@ codegen predeterminado hasta que exista una mejora general validada.
    etiqueta, hash o renderer. Toda regla nueva debe justificarse con el modelo
    VU y tener tests positivos/negativos y, cuando afecte a codegen, diferencial
    runtime.
-7. El primer selector global acotado queda implementado como experimento
-   diagnóstico. Parte del MII preciso, recorre por defecto cuatro `source II`
-   consecutivos (ventana configurable y limitada), limita por defecto el source
-   II a 64 y el solver a 5000 estados por candidato, exige un witness exacto para
-   cada candidato dentro de un máximo de dos stages, construye sus decisiones de
-   rename, expande materializaciones/retargets y ejecuta el refit del DDG
-   expandido. La selección es determinista y se hace **después** del refit:
-   menor II final, menor número de stages final, menos nodos expandidos y, sólo
-   como último desempate, menor source II. En `indexed/xform_loop_lid` reproduce
-	   35->41, 36->41, 37->38 y 38->40 y selecciona 37->38. El resultado no se
-	   copia todavía a la oportunidad usada por codegen. La validación posterior
-	   recompila la suite host completa y una baseline nueva de los 13 renderers
-	   (`candidate-sweep-001`): no hay fallos y los 52 VSM de
-	   default/no-pipeline/kernel/expanded son bit a bit idénticos a
-	   `kernel-rewrite-safety-001`, por lo que este milestone no altera todavía
-	   tamaño ni coste del codegen de producción.
-	8. El refit expandido conserva ahora también sus rejillas de PROLOG y DRAIN,
-	   traducidas a los mismos descriptores de nodos reconstruibles que MAIN. Esto
-	   evita perder el envelope al destruir el shadow placer. Una clasificación
-	   estructural adicional sólo acepta como `selfContained` un refit de una etapa,
-	   sin conflictos ni PROLOG/DRAIN, cuya rejilla MAIN cubra cada nodo expandido
-	   exactamente una vez. `indexed/xform_loop_lid` 37->38 cumple esa condición:
-	   68 nodos, MAIN=38*4 celdas, PROLOG=0 y DRAIN=0. Es una condición necesaria
-	   para una futura emisión directa del MAIN, no una prueba semántica.
-	9. La primera promoción experimental del MAIN autocontenido ha revelado una
-	   restricción de control que el refit diagnóstico no modelaba: el backedge no
-	   puede quedar en cualquier slot lower, debe ocupar el lower del último ciclo
-	   del kernel que se emite directamente. Sin esa restricción, el 37->38 coloca
-	   el branch en el ciclo 31/38 y no es directamente representable. El solver
-	   exacto admite ahora fijar genéricamente un token tail; con el branch fijado y
-	   el refit limitado a una etapa, `indexed/xform_loop_lid` pasa a 35->41,
-	   36->41, **37->39**, 38->40 y selecciona 37->39, con el branch en ciclo 38
-	   lane lower. El intento branch-aware de II=38 para el source 37 agota tanto
-	   5000 como 200000 estados (`UNKNOWN`, no `UNSAT`), por lo que 39 es el mejor
-	   resultado encontrado bajo el presupuesto actual, no una prueba de mínimo.
-	   La ruta `OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION=1`
-	   emite ese MAIN sólo cuando el refit es autocontenido y el branch satisface
-	   esa posición final. El fixture PCSX2
-	   `vu1_generic_kernel_rewrite_differential` conserva el cuerpo real del loop y
-	   compara 12 qwords de salida más los punteros finales: candidato y baseline
-	   son bit-identical (`next_index=18`, `next_output=236`). El VSM experimental
-	   reduce `.vutext` de 3440 a 2752 bytes y el modelo estático del bloque caliente
-	   baja de 139 a 41 ciclos estimados por repetición; estas cifras no sustituyen
-	   una medición de rendimiento en hardware real. El comportamiento
-	   normal sigue sin cambios: `direct-refit-default-001` completa los 13
-	   renderers y sus 52 VSM, costes y tamaños son idénticos a
-	   `refit-envelope-001`.
+	7. El selector global acotado sigue siendo un experimento diagnóstico. Parte del
+	   MII preciso, recorre por defecto cuatro `source II`, exige witness exacto,
+	   construye las decisiones de rename y compara los candidatos **después** del
+	   refit expandido. La clasificación sigue siendo determinista: menor refit II,
+	   menor stage count, menos nodos expandidos y source II como desempate.
+	8. Se corrigió un error conceptual importante del refit expandido. La rejilla
+	   `kernelRewriteMainTokens` está en orden de placement, pero el constructor del
+	   DDG preciso determina `dist=0/1` a partir del orden de su secuencia de entrada.
+	   Usar la rejilla como si fuera orden de programa podía convertir RAW de la misma
+	   iteración en recurrencias sintéticas. La expansión se construye ahora en orden
+	   semántico original, conservando la celda de placement sólo como metadata. Con
+	   ese modelo corregido, el resultado anterior 37->38 queda **invalidado**: el
+	   sweep de `indexed/xform_loop_lid` produce 35->49, 36->49, **37->44** y 38->48;
+	   el seleccionado 37->44 tiene dos etapas, 74 nodos, PROLOG=54 nodos y
+	   DRAIN=20. Por tanto ya no existe evidencia válida de que OpenVCL iguale las
+	   38 filas de Sony con el modelo actual.
+	9. La investigación del antiguo `UNKNOWN` branch-aware de II=38 también cambia
+	   con el DDG correcto. El refit expandido del candidato source-II 37 tiene ahora
+	   MII 44 antes de imponer la forma directa de una sola etapa, de modo que II=38
+	   queda por debajo del propio límite del modelo corregido; ya no es un problema
+	   de presupuesto del solver. El solver
+	   incorpora además, de forma opt-in para este experimento, un matching bipartito
+	   upper/lower que detecta conflictos globales de residuos que AC-3 por pares no
+	   puede ver. Es una poda necesaria y conservadora, no una relajación del modelo.
+	10. La ruta `OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION=1` se mantiene sólo
+	    como banco de pruebas semántico. Con orden y materializaciones corregidos, el
+	    mejor MAIN de una etapa para `indexed` pasa a **37->66** y el VSM completo
+	    queda en 2976 bytes frente a 3440 del default; ya no se considera una ruta de
+	    scheduling candidata a promoción. Al ampliar el diferencial PCSX2 apareció
+	    además una lectura stale: un productor renombrado escribía scratch mientras
+	    un consumidor posterior seguía leyendo el base arquitectónico. El modelo
+	    expandido mantiene ahora estado `dirty` por decisión e inserta
+	    `scratch -> base` sólo antes de la siguiente lectura que realmente lo necesita,
+	    preservando correctamente los live-ins. El fixture real de `xform_loop_lid`
+	    valida 6 casos, entre 1 y 8 iteraciones, distintos pares de índices, hasta 48
+	    qwords de salida y los punteros finales, bit a bit contra el baseline.
+	    La baseline fresca `corrected-refit-final-014` completa los 13 renderers y las
+	    cuatro variantes sin fallos: sus 52 VSM, `vutext-bytes.json` y métricas de
+	    coste son idénticos a `direct-refit-default-001`, confirmando que estas
+	    correcciones siguen aisladas del path por defecto.
+	11. El siguiente milestone de optimización vuelve a ser el envelope completo de
+	    dos etapas: transportar y emitir correctamente el PROLOG/MAIN/DRAIN del
+	    candidato 37->44 antes de discutir cualquier promoción. La emisión directa
+	    de una etapa queda como prueba de infraestructura y semántica, no como objetivo
+	    de rendimiento.
 
 **Punto de decisión:** si existe `SAT` por debajo del II greedy, mejorar el
 algoritmo de placement usando el witness y la comparación con Sony. Si todos

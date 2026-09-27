@@ -5,6 +5,7 @@ Requires locally built OpenVCL/MASP and PS2DEV. Never installs tools or changes
 shaders. Results are static model estimates, not correctness/runtime evidence.
 """
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 
 RENDERERS = (
@@ -48,6 +50,8 @@ def main():
     parser.add_argument('--ps2dev', type=Path, default=os.environ.get('PS2DEV'))
     parser.add_argument('--output', type=Path, required=True, help='New directory; existing paths are rejected')
     parser.add_argument('--jobs', type=int, default=8)
+    parser.add_argument('--timeout', type=int, default=300,
+                        help='per-command timeout in seconds (default: 300)')
     args = parser.parse_args()
     if args.ps2dev is None:
         parser.error('Set PS2DEV or pass --ps2dev')
@@ -78,19 +82,26 @@ def main():
         'environment': {k: env[k] for k in ('PS2DEV', 'PS2SDK', 'GSKIT', 'PATH')},
         'variants': VARIANTS, 'commands': [], 'failures': [], 'tools': {},
     }
+    metadata_lock = threading.Lock()
 
     def run(argv, name, extra=None, check=True):
         argv = list(map(str, argv))
         proc = subprocess.run(argv, env=dict(env, **(extra or {})), cwd=root,
-                              capture_output=True, text=True, timeout=300)
+                              capture_output=True, text=True, timeout=args.timeout)
         (out / (name + '.stdout')).write_text(proc.stdout)
         (out / (name + '.stderr')).write_text(proc.stderr)
-        metadata['commands'].append({'argv': argv, 'environment_override': extra or {},
-                                     'returncode': proc.returncode, 'log': name})
-        dump(out / 'metadata.json', metadata)
+        with metadata_lock:
+            metadata['commands'].append({'argv': argv, 'environment_override': extra or {},
+                                         'returncode': proc.returncode, 'log': name})
+            dump(out / 'metadata.json', metadata)
         if check and proc.returncode:
             raise RuntimeError(f'{name} failed ({proc.returncode}); see {out / (name + ".stderr")}')
         return proc
+
+    def record_failure(message):
+        with metadata_lock:
+            metadata['failures'].append(message)
+            dump(out / 'metadata.json', metadata)
 
     tool_paths = [('openvcl', args.openvcl), ('masp', args.masp),
                   ('dvp-as', assembler), ('dvp-size', size_tool)]
@@ -144,10 +155,10 @@ def main():
         print(f'Comparing {variant}: {len(RENDERERS)} renderers', flush=True)
         dest = out / variant
         dest.mkdir()
-        pairs = []
         costs[variant] = {}
         sizes[variant] = {}
-        for renderer in RENDERERS:
+
+        def process_renderer(renderer):
             source = out / 'build-openvcl/vu1' / (renderer + '_pp4.vcl')
             candidate = dest / (renderer + '_vcl.vsm')
             log = f'{variant}/{renderer}'
@@ -158,30 +169,42 @@ def main():
                 if sha(candidate) != sha(original):
                     raise RuntimeError(f'Default output differs from pure CMake output: {renderer}')
             assembly = run([assembler, '-o', dest / (renderer + '.vo'), candidate], log + '-assemble', check=False)
+            size_value = None
             if assembly.returncode:
-                metadata['failures'].append(f'Assembly failed: {variant}/{renderer}')
+                record_failure(f'Assembly failed: {variant}/{renderer}')
             else:
                 size_report = run([size_tool, '-A', dest / (renderer + '.vo')], log + '-size')
                 section = re.search(r'^\.vutext\s+(\d+)\s+', size_report.stdout, re.M)
                 if not section:
                     raise RuntimeError(f'Missing .vutext section: {variant}/{renderer}')
-                sizes[variant][renderer] = int(section.group(1))
+                size_value = int(section.group(1))
             reference = out / 'references' / ('scei_vcl.vsm' if renderer == 'scei' else f'sce_{renderer}_vcl.vsm')
-            pairs.append(f'{reference} {candidate}\n')
             report = run([args.openvcl, '--cost-json', '--cost-loop-preset', 'ps2gl', candidate], log + '-cost')
             cost = json.loads(report.stdout)
-            costs[variant][renderer] = cost
             if cost['unknown_instructions'] or cost['slot_mismatches'] or cost['ignored_lines']:
-                metadata['failures'].append(f'Invalid cost model input: {variant}/{renderer}')
+                record_failure(f'Invalid cost model input: {variant}/{renderer}')
+            reference_cost = None
             if variant == 'default':
                 baseline = run([args.openvcl, '--cost-json', '--cost-loop-preset', 'ps2gl', reference],
                                'references/' + renderer + '-cost')
-                costs.setdefault('sce', {})[renderer] = json.loads(baseline.stdout)
-                reference_cost = costs['sce'][renderer]
+                reference_cost = json.loads(baseline.stdout)
                 if any(reference_cost[k] for k in ('unknown_instructions', 'slot_mismatches', 'ignored_lines')):
-                    metadata['failures'].append(f'Invalid reference cost input: {renderer}')
+                    record_failure(f'Invalid reference cost input: {renderer}')
             run([args.openvcl, '--dump-loop-pipeline-info-json', '--disable-known-loop-optimizations',
                  *flags, source], log + '-loops', extra)
+            return renderer, cost, size_value, reference_cost, f'{reference} {candidate}\n'
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as executor:
+            results = list(executor.map(process_renderer, RENDERERS))
+
+        pairs = []
+        for renderer, cost, size_value, reference_cost, pair in results:
+            costs[variant][renderer] = cost
+            if size_value is not None:
+                sizes[variant][renderer] = size_value
+            if reference_cost is not None:
+                costs.setdefault('sce', {})[renderer] = reference_cost
+            pairs.append(pair)
         (dest / 'pairs.txt').write_text(''.join(pairs))
         # Whitespace manifests are an existing CLI limitation. JSON remains usable with spaces.
         if not re.search(r'\s', str(out)):
@@ -207,6 +230,7 @@ def main():
     (out / 'summary.md').write_text('\n'.join(lines) + '\n')
     artifacts = sorted(p for p in out.rglob('*') if p.is_file() and p.suffix in ('.vcl', '.vsm', '.vo'))
     metadata['artifact_sha256'] = {str(p.relative_to(out)): sha(p) for p in artifacts}
+    metadata['commands'].sort(key=lambda command: command['log'])
     metadata['complete'] = True
     metadata['finished_utc'] = datetime.now(timezone.utc).isoformat()
     dump(out / 'metadata.json', metadata)

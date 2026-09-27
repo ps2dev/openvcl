@@ -24,7 +24,9 @@ python3 tools/ps2gl_baseline.py \
 ```
 
 Use `--ps2gl`, `--masp`, `--masp-source`, and `--openvcl` to override sibling
-repository/tool locations. The script pins the local tool paths, removes
+repository/tool locations. `--timeout` overrides the per-command timeout (300
+seconds by default), which is useful on heavily loaded validation hosts without
+changing the generated corpus. The script pins the local tool paths, removes
 inherited `OPENVCL_*` variables, builds all 13 renderers with the SCE override
 list empty, and separately assembles the 13 SCE references. It then compares:
 
@@ -190,11 +192,17 @@ refit additionally constrains the original loop backedge to the lower lane of th
 final modulo cycle and requires a single-stage result. Only a conflict-free refit
 with no PROLOG/DRAIN and one-to-one MAIN coverage is emitted. The original branch
 is kept as the loop backedge; synthetic rename MOVEs stay on the lower pipe to
-match the expanded-DDG model. On `indexed/xform_loop_lid` this changes the best
-direct candidate found under the bounded search from the unconstrained 37->38
-diagnostic result to **37->39**. The branch-aware II=38 search for source II=37
-is `UNKNOWN` at both 5000 and 200000 states, not `UNSAT`; do not interpret 39 as
-a proved minimum.
+match the expanded-DDG model. Expanded nodes are built in original semantic token
+order; `kernelRewriteMainTokens` is a placement grid and must not be used as DDG
+program order. With that correction, the ordinary two-stage diagnostic sweep on
+`indexed/xform_loop_lid` selects **37->44**, while the one-stage branch-tail
+experiment selects **37->66**. The corrected source-37 expanded refit has MII 44,
+so the old branch-aware II=38 question is already below the model's lower bound.
+The exact solver also enables a
+conservative global bipartite matching check for upper/lower modulo resources in
+this experiment. A renamed scratch is materialized back to its architectural base
+only after a renamed write has made that decision dirty and before a later base
+read needs it; this preserves pre-write live-ins and prevents stale-base reads.
 The flag is not enabled by default.
 
 Validate that direct path with the extracted indexed transform-loop differential:
@@ -206,10 +214,11 @@ python3 test/ps2/vu1_differential/run_pcsx2.py \
 ```
 
 The expected marker is
-`VU1_DIFFERENTIAL_PASS generic-kernel-direct rows=12 index=18 output=236`.
-The fixture compares the candidate and conservative baseline bit-for-bit over 12
-output qwords and the final loop pointers; it does not by itself validate every
-possible input/trip count or establish a PS2 performance measurement.
+`VU1_DIFFERENTIAL_PASS generic-kernel-direct cases=6 max-iterations=8`.
+The fixture compares the candidate and conservative baseline bit-for-bit over six
+cases (1, 2, 3, 4, 6 and 8 loop iterations), varied first/second vertex indices,
+up to 48 output qwords and the final loop pointers. It still does not validate
+every possible input/trip count or establish a PS2 performance measurement.
 
 Characterize those accepted no-Q rewrites against a completed baseline:
 

@@ -42,3 +42,27 @@ TEST_CASE("Modulo feasibility: enforces carried self edge")
     REQUIRE( result.status == VuModuloFeasibilityResult::UNSAT );
 }
 
+TEST_CASE("Modulo feasibility: detects Hall resource conflict before search budget")
+{
+    std::vector<VuModuloFeasibilityNode> nodes( 4 );
+    for( unsigned int i = 0; i < nodes.size(); ++i )
+    {
+        nodes[i].pipe = 1;
+        nodes[i].lo = 0;
+        nodes[i].hi = 2;
+    }
+    std::vector<VuModuloFeasibilityEdge> edges;
+
+    // Pairwise arc consistency cannot reject four upper-pipe nodes that each
+    // have residues {0,1,2}. After one assignment it still leaves three nodes
+    // with two residues, so a one-state budget reports UNKNOWN. The global
+    // matching check proves the Hall/pigeonhole conflict at the root.
+    const VuModuloFeasibilityResult pairwiseOnly = solveVuModuloFeasibility(
+        4, nodes, edges, 1, false );
+    REQUIRE( pairwiseOnly.status == VuModuloFeasibilityResult::UNKNOWN );
+
+    const VuModuloFeasibilityResult result = solveVuModuloFeasibility(
+        4, nodes, edges, 1, true );
+    REQUIRE( result.status == VuModuloFeasibilityResult::UNSAT );
+}
+
