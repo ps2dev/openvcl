@@ -33,6 +33,7 @@ The target checks that:
 - candidate and default VSM are byte-identical while emission is blocked;
 - both VSM files assemble with `dvp-as`.
 
-This is a blocker/research probe, not a runtime differential. Once a generic MVE
-allocator/emitter closes the final hazards, this probe can be replaced or
-extended by a PCSX2 semantic differential.
+This remains a blocker/research probe for the non-MVE two-stage path. The
+stage-aware follow-up now lives in `../vu1_two_stage_mve_differential`, which uses
+`OPENVCL_EXPERIMENT_TWO_STAGE_MVE=1` and validates the resulting A/B envelope in
+PCSX2 while keeping this probe as a regression test for the original safety gate.

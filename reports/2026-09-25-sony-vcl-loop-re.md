@@ -265,3 +265,22 @@ experimental two-stage emitter remains gated off until that register plan is
 semantically closed. The corresponding Release safety baseline
 `two-stage-refit-safety-003` completes the full 52-VSM corpus with outputs,
 static-cost metrics and `.vutext` sizes identical to `corrected-refit-final-014`.
+
+That stage-aware experiment is now available behind
+`OPENVCL_EXPERIMENT_TWO_STAGE_MVE=1`. Instead of consuming scratch registers with
+the first-level rename and then trying to repair the final layout again, OpenVCL
+lets the final two-stage refit identify the cross-stage VF families and assigns an
+alternate physical version to each one. On the indexed loop all four bounded
+source candidates (II 35..38) converge to a two-stage **II=35** refit with 62 MAIN
+nodes; the envelope contains 37 PROLOG and 25 DRAIN nodes. Five final VF families
+need alternate versions and all five fit.
+
+The resulting A/B emitter has passed a focused PCSX2 differential over six trip
+counts and varied vertex-index inputs, including final pointer state. This is
+evidence that stage-aware versioning solves the semantic overlap which ordinary
+recursive scratch/materialize renaming did not. It is not evidence that Sony uses
+the same allocator or A/B encoding. In particular, the extracted experimental VU
+object is larger than the conservative one (1728 versus 1200 bytes), and runtime
+performance on real PS2 hardware has not been measured. The Release safety corpus
+`two-stage-mve-safety-004` remains byte-identical to `two-stage-refit-safety-003`
+for all 52 normal-path VSM outputs, with identical costs and `.vutext` sizes.

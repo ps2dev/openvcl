@@ -7196,6 +7196,8 @@ VuLoopPipelineOpportunity::VuLoopPipelineOpportunity()
 	kernelRewriteRefitAssignedRenameDecisionCount = 0;
 	kernelRewriteExactCandidateSelected = false;
 	kernelRewriteExactCandidateSourceII = 0;
+	kernelRewriteTwoStageMveSelected = false;
+	kernelRewriteTwoStageMveSourceII = 0;
 }
 
 VuSoftwarePipelineRewritePlan::VuSoftwarePipelineRewritePlan()
@@ -7240,6 +7242,8 @@ VuSoftwarePipelineRewritePlan::VuSoftwarePipelineRewritePlan()
 	directSelfContainedSourceII = 0;
 	twoStageRefitEnvelope = false;
 	twoStageRefitSourceII = 0;
+	twoStageMve = false;
+	twoStageMveSourceII = 0;
 }
 
 bool isVuKernelCandidateScoreBetter( const VuKernelCandidateScore& candidate,
@@ -10200,6 +10204,7 @@ namespace
 			"OPENVCL_EXPERIMENT_EXACT_EXPANDED_DDG_REFIT",
 			"OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION",
 			"OPENVCL_EXPERIMENT_TWO_STAGE_REFIT_ENVELOPE",
+			"OPENVCL_EXPERIMENT_TWO_STAGE_MVE",
 			"OPENVCL_EXPERIMENT_SOURCE_RENAME_SUBSET_SWEEP",
 			"OPENVCL_DUMP_LOOP_SCHEDULE",
 			"OPENVCL_DUMP_KERNEL_LAYOUT",
@@ -11102,11 +11107,14 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 			    std::getenv( "OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION" ) != NULL;
 			const bool twoStageRefitEnvelopeExperiment =
 			    std::getenv( "OPENVCL_EXPERIMENT_TWO_STAGE_REFIT_ENVELOPE" ) != NULL;
+			const bool twoStageMveExperiment =
+			    std::getenv( "OPENVCL_EXPERIMENT_TWO_STAGE_MVE" ) != NULL;
 			const bool sourceRenameSubsetSweep =
 			    std::getenv( "OPENVCL_EXPERIMENT_SOURCE_RENAME_SUBSET_SWEEP" ) != NULL;
 			if( ( std::getenv( "OPENVCL_EXPERIMENT_EXACT_CANDIDATE_SWEEP" ) != NULL
 			      || directSelfContainedRefitExperiment
 			      || twoStageRefitEnvelopeExperiment
+			      || twoStageMveExperiment
 			      || sourceRenameSubsetSweep )
 		    && opportunity.simpleCountedLoop
 		    && opportunity.mainTokenIndices.empty()
@@ -11215,36 +11223,57 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 				const unsigned int softBlockers = candidate.kernelRewriteRenameHints.empty()
 				    ? 0u : countKernelRenameEmissionSoftBlockers( gate, indexedTokens );
 
-				if( sourceFeasible && renameReady )
-					runExpandedDDGRefitDiagnostic( candidate, indexedTokens, tokens,
+				VuLoopPipelineOpportunity refitCandidate = candidate;
+				if( twoStageMveExperiment )
+				{
+					// MVE gives each overlapped iteration its own architectural VF
+					// version. Do not first consume scratch registers with the older
+					// source-level materialize/restore transform; let the FINAL refit
+					// describe exactly which cross-stage values need an alternate
+					// version.
+					refitCandidate.kernelRewriteRenameHints.clear();
+					refitCandidate.kernelRewriteRenameDecisions.clear();
+					refitCandidate.kernelRewriteRenameMoveSlots.clear();
+				}
+				if( sourceFeasible && ( twoStageMveExperiment || renameReady ) )
+					runExpandedDDGRefitDiagnostic( refitCandidate, indexedTokens, tokens,
 					                                 /*forceExactExpandedRefit=*/true,
 					                                 maxStates,
 					                                 ( directSelfContainedRefitExperiment
-					                                   && !twoStageRefitEnvelopeExperiment ) ? 1u : maxStages,
+					                                   && !twoStageRefitEnvelopeExperiment
+					                                   && !twoStageMveExperiment ) ? 1u : maxStages,
 					                                 directSelfContainedRefitExperiment
-					                                   && !twoStageRefitEnvelopeExperiment );
+					                                   && !twoStageRefitEnvelopeExperiment
+					                                   && !twoStageMveExperiment );
 
 				VuKernelCandidateScore score;
 				score.sourceII = sourceII;
-				score.refitII = candidate.kernelRewriteRefitII;
-				score.refitStageCount = candidate.kernelRewriteRefitStageCount;
-				score.refitMainTokenCount = candidate.kernelRewriteRefitMainTokenCount;
+				score.refitII = refitCandidate.kernelRewriteRefitII;
+				score.refitStageCount = refitCandidate.kernelRewriteRefitStageCount;
+				score.refitMainTokenCount = refitCandidate.kernelRewriteRefitMainTokenCount;
+				const bool mveRegisterPlanAllocated = !twoStageMveExperiment
+				    || ( isVuKernelTwoStageRefitEnvelope( refitCandidate )
+				         && refitCandidate.kernelRewriteRenameDecisions.empty()
+				         && refitCandidate.kernelRewriteRefitRenameDecisionCount > 0u
+				         && refitCandidate.kernelRewriteRefitRenameDecisionCount
+				            == refitCandidate.kernelRewriteRefitAssignedRenameDecisionCount );
 				score.valid = sourceFeasible
-				    && renameReady
+				    && ( twoStageMveExperiment || renameReady )
 				    && score.refitII > 0u
-				    && candidate.kernelRewriteRefitConflicts == 0u
+				    && refitCandidate.kernelRewriteRefitConflicts == 0u
 				    && score.refitMainTokenCount > 0u
-				    && !candidate.kernelRewriteRefitMainTokens.empty();
+				    && !refitCandidate.kernelRewriteRefitMainTokens.empty()
+				    && mveRegisterPlanAllocated;
 				if( score.valid ) ++validCandidates;
 				int candidateBranchCycle = -1;
 				int candidateBranchLane = -1;
-				for( unsigned int n = 0; n < candidate.kernelRewriteRefitNodes.size(); ++n )
+				for( unsigned int n = 0; n < refitCandidate.kernelRewriteRefitNodes.size(); ++n )
 				{
-					if( candidate.kernelRewriteRefitNodes[n].sourceTokenIndex != opportunity.branchTokenIndex )
+					if( refitCandidate.kernelRewriteRefitNodes[n].sourceTokenIndex != opportunity.branchTokenIndex )
 						continue;
-					for( unsigned int g = 0; g < candidate.kernelRewriteRefitMainTokens.size(); ++g )
+					for( unsigned int g = 0; g < refitCandidate.kernelRewriteRefitMainTokens.size(); ++g )
 					{
-						if( candidate.kernelRewriteRefitMainTokens[g] != n ) continue;
+						if( refitCandidate.kernelRewriteRefitMainTokens[g] != n ) continue;
 						candidateBranchCycle = static_cast<int>( g / 4u );
 						candidateBranchLane = static_cast<int>( g % 4u );
 						break;
@@ -11262,7 +11291,10 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 				          << " refitII=" << score.refitII
 					          << " refitStages=" << score.refitStageCount
 					          << " refitMain=" << score.refitMainTokenCount
-					          << " refitRenameHints=" << candidate.kernelRewriteRefitRenameHintCount
+					          << " refitRenameHints=" << refitCandidate.kernelRewriteRefitRenameHintCount
+					          << " refitRenameDecisions=" << refitCandidate.kernelRewriteRefitRenameDecisionCount
+					          << " refitRenameAssigned=" << refitCandidate.kernelRewriteRefitAssignedRenameDecisionCount
+					          << " mve=" << ( twoStageMveExperiment ? 1 : 0 )
 					          << " branchCycle=" << candidateBranchCycle
 				          << " branchLane=" << candidateBranchLane
 				          << " valid=" << ( score.valid ? 1 : 0 )
@@ -11271,34 +11303,34 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 				if( isVuKernelCandidateScoreBetter( score, bestScore ) )
 				{
 					bestScore = score;
-					bestCandidate = candidate;
+					bestCandidate = refitCandidate;
 					haveBestCandidate = true;
 					bestRefitBranchCycle = -1;
 					bestRefitBranchLane = -1;
 					bestRefitPrologCells = static_cast<unsigned int>(
-					    candidate.kernelRewriteRefitPrologTokens.size() );
+					    refitCandidate.kernelRewriteRefitPrologTokens.size() );
 					bestRefitPrologNodes = countRefitGridNodes(
-					    candidate.kernelRewriteRefitPrologTokens );
+					    refitCandidate.kernelRewriteRefitPrologTokens );
 					bestRefitMainCells = static_cast<unsigned int>(
-					    candidate.kernelRewriteRefitMainTokens.size() );
+					    refitCandidate.kernelRewriteRefitMainTokens.size() );
 					bestRefitMainNodes = countRefitGridNodes(
-					    candidate.kernelRewriteRefitMainTokens );
+					    refitCandidate.kernelRewriteRefitMainTokens );
 					bestRefitDrainCells = static_cast<unsigned int>(
-					    candidate.kernelRewriteRefitDrainTokens.size() );
+					    refitCandidate.kernelRewriteRefitDrainTokens.size() );
 					bestRefitDrainNodes = countRefitGridNodes(
-					    candidate.kernelRewriteRefitDrainTokens );
-					bestRefitSelfContained = isVuKernelRefitSelfContained( candidate );
-					bestRefitTwoStageEnvelope = isVuKernelTwoStageRefitEnvelope( candidate );
-					bestRefitRenameHints = candidate.kernelRewriteRefitRenameHintCount;
+					    refitCandidate.kernelRewriteRefitDrainTokens );
+					bestRefitSelfContained = isVuKernelRefitSelfContained( refitCandidate );
+					bestRefitTwoStageEnvelope = isVuKernelTwoStageRefitEnvelope( refitCandidate );
+					bestRefitRenameHints = refitCandidate.kernelRewriteRefitRenameHintCount;
 					unsigned int branchNode = VuKernelRefitNode::NO_INDEX;
-					for( unsigned int n = 0; n < candidate.kernelRewriteRefitNodes.size(); ++n )
-						if( candidate.kernelRewriteRefitNodes[n].sourceTokenIndex == opportunity.branchTokenIndex )
+					for( unsigned int n = 0; n < refitCandidate.kernelRewriteRefitNodes.size(); ++n )
+						if( refitCandidate.kernelRewriteRefitNodes[n].sourceTokenIndex == opportunity.branchTokenIndex )
 							branchNode = n;
 					if( branchNode != VuKernelRefitNode::NO_INDEX )
 					{
-						for( unsigned int g = 0; g < candidate.kernelRewriteRefitMainTokens.size(); ++g )
+						for( unsigned int g = 0; g < refitCandidate.kernelRewriteRefitMainTokens.size(); ++g )
 						{
-							if( candidate.kernelRewriteRefitMainTokens[g] != branchNode ) continue;
+							if( refitCandidate.kernelRewriteRefitMainTokens[g] != branchNode ) continue;
 							bestRefitBranchCycle = static_cast<int>( g / 4u );
 							bestRefitBranchLane = static_cast<int>( g % 4u );
 							break;
@@ -11441,11 +11473,17 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 
 				const bool publishDirectCandidate = directSelfContainedRefitExperiment
 			    && haveBestCandidate && bestScore.valid && bestRefitSelfContained;
-			const bool publishTwoStageCandidate = twoStageRefitEnvelopeExperiment
-			    && haveBestCandidate && bestScore.valid && bestRefitTwoStageEnvelope
-			    && bestRefitRenameHints == 0u;
-			if( publishDirectCandidate || publishTwoStageCandidate )
-			{
+				const bool publishTwoStageCandidate = twoStageRefitEnvelopeExperiment
+				    && haveBestCandidate && bestScore.valid && bestRefitTwoStageEnvelope
+				    && bestRefitRenameHints == 0u;
+				const bool publishTwoStageMveCandidate = twoStageMveExperiment
+				    && haveBestCandidate && bestScore.valid && bestRefitTwoStageEnvelope
+				    && bestCandidate.kernelRewriteRenameDecisions.empty()
+				    && bestCandidate.kernelRewriteRefitRenameDecisionCount > 0u
+				    && bestCandidate.kernelRewriteRefitRenameDecisionCount
+				       == bestCandidate.kernelRewriteRefitAssignedRenameDecisionCount;
+				if( publishDirectCandidate || publishTwoStageCandidate || publishTwoStageMveCandidate )
+				{
 				// Publish only the exact selected candidate's scheduling/rename/refit
 				// state. Loop shape, labels and the original multi-Q analysis remain
 				// on `opportunity`; the direct emitter consumes these copied fields.
@@ -11474,9 +11512,12 @@ std::vector<VuLoopPipelineOpportunity> findVuLoopPipelineOpportunities( const st
 				opportunity.kernelRewriteRefitPrologTokens = bestCandidate.kernelRewriteRefitPrologTokens;
 				opportunity.kernelRewriteRefitMainTokens = bestCandidate.kernelRewriteRefitMainTokens;
 				opportunity.kernelRewriteRefitDrainTokens = bestCandidate.kernelRewriteRefitDrainTokens;
-				opportunity.kernelRewriteExactCandidateSelected = true;
-				opportunity.kernelRewriteExactCandidateSourceII = bestScore.sourceII;
-			}
+					opportunity.kernelRewriteExactCandidateSelected = true;
+					opportunity.kernelRewriteExactCandidateSourceII = bestScore.sourceII;
+					opportunity.kernelRewriteTwoStageMveSelected = publishTwoStageMveCandidate;
+					opportunity.kernelRewriteTwoStageMveSourceII =
+					    publishTwoStageMveCandidate ? bestScore.sourceII : 0u;
+				}
 		}
 
 		if( std::getenv( "OPENVCL_DUMP_PIPELINE_OPPORTUNITIES" ) != NULL )
@@ -12472,6 +12513,8 @@ std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( 
 	    std::getenv( "OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION" ) != NULL;
 	const bool twoStageRefitEnvelopeExperiment =
 	    std::getenv( "OPENVCL_EXPERIMENT_TWO_STAGE_REFIT_ENVELOPE" ) != NULL;
+	const bool twoStageMveExperiment =
+	    std::getenv( "OPENVCL_EXPERIMENT_TWO_STAGE_MVE" ) != NULL;
 	std::map<unsigned int, bool> plannedLabelIndices;
 	for( std::vector<VuLoopPipelineOpportunity>::const_iterator i = opportunities.begin(); i != opportunities.end(); ++i )
 	{
@@ -12481,10 +12524,15 @@ std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( 
 		const bool twoStageRefitEnvelope = twoStageRefitEnvelopeExperiment
 		    && i->kernelRewriteExactCandidateSelected
 		    && isVuKernelTwoStageRefitEnvelope( *i );
+		const bool twoStageMve = twoStageMveExperiment
+		    && i->kernelRewriteTwoStageMveSelected
+		    && i->kernelRewriteExactCandidateSelected
+		    && isVuKernelTwoStageRefitEnvelope( *i );
 		if( !i->canEmitSoftwarePipeline
 		    && !i->canEmitMultiQSoftwarePipeline
 		    && !directSelfContained
-		    && !twoStageRefitEnvelope )
+		    && !twoStageRefitEnvelope
+		    && !twoStageMve )
 			continue;
 
 		VuSoftwarePipelineRewritePlan plan;
@@ -12546,8 +12594,10 @@ std::vector<VuSoftwarePipelineRewritePlan> buildVuSoftwarePipelineRewritePlans( 
 		plan.directSelfContainedSourceII      = i->kernelRewriteExactCandidateSourceII;
 		plan.twoStageRefitEnvelope            = twoStageRefitEnvelope;
 		plan.twoStageRefitSourceII            = i->kernelRewriteExactCandidateSourceII;
+		plan.twoStageMve                      = twoStageMve;
+		plan.twoStageMveSourceII              = i->kernelRewriteTwoStageMveSourceII;
 
-		if( directSelfContained || twoStageRefitEnvelope )
+		if( directSelfContained || twoStageRefitEnvelope || twoStageMve )
 		{
 			plans.push_back( plan );
 			plannedLabelIndices[plan.labelTokenIndex] = true;
@@ -13044,7 +13094,7 @@ namespace
 		return true;
 	}
 
-	bool isTwoStageRefitEnvelopePlanEligible(
+		bool isTwoStageRefitEnvelopePlanEligible(
 	    const VuSoftwarePipelineRewritePlan& plan,
 	    const std::vector<const Token*>& indexedTokens )
 	{
@@ -13116,10 +13166,254 @@ namespace
 			}
 		}
 
-		return branchNode != VuKernelRefitNode::NO_INDEX
-		    && prologSeen[branchNode] == 1u
-		    && drainSeen[branchNode] == 0u;
-	}
+			return branchNode != VuKernelRefitNode::NO_INDEX
+			    && prologSeen[branchNode] == 1u
+			    && drainSeen[branchNode] == 0u;
+		}
+
+		bool buildTwoStageRefitNodeStages( const VuSoftwarePipelineRewritePlan& plan,
+		                                      std::vector<int>& nodeStages )
+		{
+			const unsigned int nodeCount = static_cast<unsigned int>(
+			    plan.kernelRewriteRefitNodes.size() );
+			nodeStages.assign( nodeCount, -1 );
+			for( unsigned int g = 0; g < plan.kernelRewriteRefitPrologTokens.size(); ++g )
+			{
+				const unsigned int node = plan.kernelRewriteRefitPrologTokens[g];
+				if( node == VuKernelRefitNode::NO_INDEX ) continue;
+				if( node >= nodeCount || nodeStages[node] != -1 ) return false;
+				nodeStages[node] = 0;
+			}
+			for( unsigned int g = 0; g < plan.kernelRewriteRefitDrainTokens.size(); ++g )
+			{
+				const unsigned int node = plan.kernelRewriteRefitDrainTokens[g];
+				if( node == VuKernelRefitNode::NO_INDEX ) continue;
+				if( node >= nodeCount || nodeStages[node] != -1 ) return false;
+				nodeStages[node] = 1;
+			}
+			for( unsigned int n = 0; n < nodeCount; ++n )
+				if( nodeStages[n] < 0 ) return false;
+			return true;
+		}
+
+		std::string mveRegisterKey( const std::string& base, unsigned int fieldMask )
+		{
+			std::string key = base + ".";
+			if( fieldMask & Token::X ) key += "x";
+			if( fieldMask & Token::Y ) key += "y";
+			if( fieldMask & Token::Z ) key += "z";
+			if( fieldMask & Token::W ) key += "w";
+			return key;
+		}
+
+		bool buildTwoStageMveDecisions(
+		    const VuSoftwarePipelineRewritePlan& plan,
+		    const std::vector<const Token*>& indexedTokens,
+		    std::vector<VuKernelRenameDecision>& decisions,
+		    std::vector<unsigned int>* seedMasks = NULL )
+		{
+			decisions.clear();
+			if( seedMasks ) seedMasks->clear();
+			if( !plan.kernelRewriteRenameHints.empty()
+			    || !plan.kernelRewriteRenameDecisions.empty()
+			    || plan.kernelRewriteRefitRenameHintCount == 0u
+			    || plan.kernelRewriteRefitRenameDecisionCount == 0u
+			    || plan.kernelRewriteRefitRenameDecisionCount
+		       != plan.kernelRewriteRefitAssignedRenameDecisionCount
+			    || plan.kernelRewriteRefitRenameDecisions.size()
+		       != plan.kernelRewriteRefitRenameDecisionCount )
+				return false;
+
+			// Reuse the already-hardened two-stage structural proof, but ignore
+			// its zero-rename-hint requirement: MVE is precisely the mechanism
+			// that gives those cross-stage VF values separate physical versions.
+			VuSoftwarePipelineRewritePlan shape = plan;
+			shape.twoStageRefitEnvelope = true;
+			shape.kernelRewriteRefitRenameHintCount = 0u;
+			if( !isTwoStageRefitEnvelopePlanEligible( shape, indexedTokens ) )
+				return false;
+
+			std::vector<int> nodeStages;
+			if( !buildTwoStageRefitNodeStages( plan, nodeStages ) ) return false;
+			std::vector<unsigned int> semanticTokenIndices;
+			semanticTokenIndices.reserve( plan.kernelRewriteRefitNodes.size() );
+			for( unsigned int n = 0; n < plan.kernelRewriteRefitNodes.size(); ++n )
+			{
+				const VuKernelRefitNode& node = plan.kernelRewriteRefitNodes[n];
+				if( node.role != VuKernelRefitNode::ROLE_PASSTHROUGH
+				    || node.sourceTokenIndex == VuKernelRefitNode::NO_INDEX
+				    || node.sourceTokenIndex >= indexedTokens.size() )
+					return false;
+				semanticTokenIndices.push_back( node.sourceTokenIndex );
+			}
+			std::sort( semanticTokenIndices.begin(), semanticTokenIndices.end() );
+			semanticTokenIndices.erase(
+			    std::unique( semanticTokenIndices.begin(), semanticTokenIndices.end() ),
+			    semanticTokenIndices.end() );
+
+			for( unsigned int d = 0; d < plan.kernelRewriteRefitRenameDecisions.size(); ++d )
+			{
+				const VuKernelRenameDecision& sourceDecision =
+				    plan.kernelRewriteRefitRenameDecisions[d];
+				if( !sourceDecision.assigned || sourceDecision.scratch.empty() ) return false;
+				const std::string base = decisionRegBase( sourceDecision.reg );
+				unsigned int touched = 0u;
+				for( unsigned int s = 0; s < semanticTokenIndices.size(); ++s )
+				{
+					const Token& token = *indexedTokens[semanticTokenIndices[s]];
+					touched |= tokenReadDecisionFields( token, base );
+					touched |= tokenWriteDecisionFields( token, base );
+				}
+				if( touched == 0u ) return false;
+
+				// MVE versions an architectural VF family, not just the hazardous
+				// subset reported by the register-plan. Any component touched by a
+				// token that will use the alternate base must travel with that version.
+				// This closes cases such as VF16.xyz plus mfir.w/sq VF16 without
+				// inventing per-component physical registers.
+				unsigned int written = 0u;
+				unsigned int liveIn = 0u;
+				unsigned int totalWrites = 0u;
+				for( unsigned int s = 0; s < semanticTokenIndices.size(); ++s )
+				{
+					const Token& token = *indexedTokens[semanticTokenIndices[s]];
+					const unsigned int reads = tokenReadDecisionFields( token, base );
+					const unsigned int writes = tokenWriteDecisionFields( token, base );
+					liveIn |= reads & touched & ~written;
+					written |= writes & touched;
+					totalWrites |= writes & touched;
+					// Scratch assignment is expected to exclude every source base;
+					// revalidate that invariant at the emission boundary.
+					if( tokenReadDecisionFields( token, sourceDecision.scratch ) != 0u
+					    || tokenWriteDecisionFields( token, sourceDecision.scratch ) != 0u )
+						return false;
+				}
+
+				// A component read before its first write is safe to seed into the
+				// alternate bank only when it is invariant for the whole iteration.
+				// If it is later written, it is genuine loop-carried state and a
+				// two-bank iteration-local expansion is not sufficient by itself.
+				if( ( liveIn & totalWrites ) != 0u ) return false;
+				if( ( ( written | liveIn ) & touched ) != touched ) return false;
+
+				VuKernelRenameDecision decision = sourceDecision;
+				decision.reg = mveRegisterKey( base, touched );
+				decisions.push_back( decision );
+				if( seedMasks ) seedMasks->push_back( liveIn );
+			}
+			return true;
+		}
+
+		bool isTwoStageMvePlanEligible(
+		    const VuSoftwarePipelineRewritePlan& plan,
+		    const std::vector<const Token*>& indexedTokens )
+		{
+			if( !plan.twoStageMve ) return false;
+			std::vector<VuKernelRenameDecision> decisions;
+			return buildTwoStageMveDecisions( plan, indexedTokens, decisions, NULL );
+		}
+
+		Token mveVersionedToken( const Token& source,
+		                         const std::vector<VuKernelRenameDecision>& decisions,
+		                         bool useAlternate )
+		{
+			Token token = tokenWithoutLabel( source );
+			if( !useAlternate ) return token;
+			for( std::list<Token::Argument>::iterator a = token.arguments().begin();
+			     a != token.arguments().end(); ++a )
+			{
+				if( a->type() != Token::Argument::FLOAT_REGISTER ) continue;
+				std::string key;
+				if( !vuRegisterKey( *a, key ) ) continue;
+				const std::string base = registerBaseKey( key );
+				for( unsigned int d = 0; d < decisions.size(); ++d )
+				{
+					if( decisionRegBase( decisions[d].reg ) != base ) continue;
+					setFloatRegisterArgumentBase( *a, decisions[d].scratch );
+					break;
+				}
+			}
+			return token;
+		}
+
+		Token makeTwoStageMveSeedToken( const Token& donor,
+		                                const VuKernelRenameDecision& decision,
+		                                unsigned int fieldMask )
+		{
+			Token token( donor );
+			token.setLabel( "" );
+			token.setName( "move" );
+			token.setOperand( syntheticMoveOperand() );
+			token.setFlags( Token::PROCESSED | Token::PREORDERED );
+			token.setBroadcast( 0 );
+			token.setFields( fieldMask );
+			token.arguments().clear();
+
+			Token::Argument dst( decision.scratch );
+			dst.setType( Token::Argument::FLOAT_REGISTER );
+			setFloatRegisterArgumentBase( dst, decision.scratch );
+			dst.setFlags( Token::Argument::WRITE | Token::Argument::DEST );
+			dst.setFields( fieldMask );
+			token.arguments().push_back( dst );
+
+			const std::string base = decisionRegBase( decision.reg );
+			Token::Argument src( base );
+			src.setType( Token::Argument::FLOAT_REGISTER );
+			setFloatRegisterArgumentBase( src, base );
+			src.setFlags( 0 );
+			src.setFields( 0 );
+			token.arguments().push_back( src );
+			return token;
+		}
+
+		bool appendMveRefitGridBody( const VuSoftwarePipelineRewritePlan& plan,
+		                               const std::vector<unsigned int>& grid,
+		                               unsigned int excludedNode,
+		                               const std::vector<int>& nodeStages,
+		                               int alternateStage,
+		                               const std::vector<VuKernelRenameDecision>& decisions,
+		                               const std::vector<const Token*>& indexedTokens,
+		                               std::list<Token>& output,
+		                               VuKernelBlockRange& range )
+		{
+			const unsigned int nodeCount = static_cast<unsigned int>(
+			    plan.kernelRewriteRefitNodes.size() );
+			if( nodeStages.size() != nodeCount ) return false;
+			std::vector<bool> used( nodeCount, false );
+			for( unsigned int g = 0; g < grid.size(); ++g )
+			{
+				const unsigned int node = grid[g];
+				if( node == VuKernelRefitNode::NO_INDEX || node == excludedNode ) continue;
+				if( node >= nodeCount ) return false;
+				used[node] = true;
+			}
+
+			std::vector<unsigned int> remap( nodeCount, VuKernelRefitNode::NO_INDEX );
+			for( unsigned int n = 0; n < nodeCount; ++n )
+			{
+				if( !used[n] ) continue;
+				const VuKernelRefitNode& node = plan.kernelRewriteRefitNodes[n];
+				if( node.role != VuKernelRefitNode::ROLE_PASSTHROUGH
+				    || node.sourceTokenIndex >= indexedTokens.size() ) return false;
+				remap[n] = static_cast<unsigned int>( range.refitNodes.size() );
+				range.refitNodes.push_back( node );
+				output.push_back( mveVersionedToken(
+				    *indexedTokens[node.sourceTokenIndex],
+				    decisions,
+				    nodeStages[n] == alternateStage ) );
+			}
+
+			range.refitMainTokens.reserve( grid.size() );
+			for( unsigned int g = 0; g < grid.size(); ++g )
+			{
+				const unsigned int node = grid[g];
+				if( node == VuKernelRefitNode::NO_INDEX || node == excludedNode )
+					range.refitMainTokens.push_back( VuKernelRefitNode::NO_INDEX );
+				else
+					range.refitMainTokens.push_back( remap[node] );
+			}
+			return true;
+		}
 
 	bool appendRefitNodeToken( const VuKernelRefitNode& node,
 	                          const VuSoftwarePipelineRewritePlan& plan,
@@ -13208,7 +13502,7 @@ namespace
 		return true;
 	}
 
-	Token refitEnvelopeLabelToken( const Token& donor, const std::string& label )
+		Token refitEnvelopeLabelToken( const Token& donor, const std::string& label )
 	{
 		// Do not carry the source --LoopCS directive onto internal envelope
 		// labels. Otherwise the normal software-pipeline pass can rediscover the
@@ -13221,8 +13515,38 @@ namespace
 		token.setBroadcast( 0 );
 		token.setFields( 0 );
 		token.arguments().clear();
-		return token;
-	}
+			return token;
+		}
+
+		const Operand* syntheticUnconditionalBranchOperand()
+		{
+			static const Operand branchOperand( "B",
+			                                    1,
+			                                    Operand::LOWER,
+			                                    "imm:branch",
+			                                    Operand::BRU,
+			                                    2,
+			                                    2 );
+			return &branchOperand;
+		}
+
+		Token unconditionalBranchToken( const Token& donor, const std::string& targetLabel )
+		{
+			Token branch( donor );
+			branch.setLabel( "" );
+			branch.setName( "b" );
+			branch.setOperand( syntheticUnconditionalBranchOperand() );
+			branch.setFlags( Token::PROCESSED );
+			branch.setBroadcast( 0 );
+			branch.setFields( 0 );
+			branch.arguments().clear();
+			Token::Argument target( targetLabel );
+			target.setType( Token::Argument::IMMEDIATE );
+			target.setFlags( Token::Argument::BRANCH );
+			target.setImmediate( targetLabel );
+			branch.arguments().push_back( target );
+			return branch;
+		}
 
 	// Track 9.G step 7b: retarget the BRANCH IMMEDIATE argument of a
 	// branch-style token (b/ibne/ibeq/...) to a new label string.
@@ -13278,6 +13602,8 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 		    isDirectSelfContainedRefitPlanEligible( *p, indexedTokens );
 		const bool twoStageEligible =
 		    isTwoStageRefitEnvelopePlanEligible( *p, indexedTokens );
+		const bool twoStageMveEligible =
+		    isTwoStageMvePlanEligible( *p, indexedTokens );
 		if( p->directSelfContainedRefit )
 		{
 			if( std::getenv( "OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION" ) != NULL )
@@ -13315,7 +13641,23 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 			if( !twoStageEligible )
 				continue;
 		}
-		if( directEligible || twoStageEligible )
+		if( p->twoStageMve )
+		{
+			if( std::getenv( "OPENVCL_EXPERIMENT_TWO_STAGE_MVE" ) != NULL )
+			{
+				std::cerr << "[two-stage-mve-plan] loop=" << p->label
+				          << " eligible=" << ( twoStageMveEligible ? 1 : 0 )
+				          << " sourceII=" << p->twoStageMveSourceII
+				          << " refitII=" << p->kernelRewriteRefitII
+				          << " nodes=" << p->kernelRewriteRefitNodes.size()
+				          << " decisions=" << p->kernelRewriteRefitRenameDecisionCount
+				          << " assigned=" << p->kernelRewriteRefitAssignedRenameDecisionCount
+				          << "\n";
+			}
+			if( !twoStageMveEligible )
+				continue;
+		}
+		if( directEligible || twoStageEligible || twoStageMveEligible )
 		{
 			eligibleByLabelIndex[p->labelTokenIndex] = *p;
 			continue;
@@ -13367,6 +13709,154 @@ std::list<Token> applyVuGenericKernelRewritePlans( const std::list<Token>& token
 			output.push_back( *i );
 			++i;
 			++index;
+			continue;
+		}
+
+		if( isTwoStageMvePlanEligible( plan, indexedTokens ) )
+		{
+			const std::string prologEndLabel = plan.label + "__MVE_PROLOG_END";
+			const std::string mainBLabel = plan.label + "__MVE_MAIN_B";
+			const std::string drainBLabel = plan.label + "__MVE_DRAIN_B";
+			const std::string drainBEndLabel = plan.label + "__MVE_DRAIN_B_END";
+			const std::string mainALabel = plan.label + "__MVE_MAIN_A";
+			const std::string drainALabel = plan.label + "__MVE_DRAIN_A";
+			const std::string exitLabel = plan.label + "__MVE_EXIT";
+
+			unsigned int branchNode = VuKernelRefitNode::NO_INDEX;
+			for( unsigned int n = 0; n < plan.kernelRewriteRefitNodes.size(); ++n )
+				if( plan.kernelRewriteRefitNodes[n].sourceTokenIndex == plan.branchTokenIndex )
+					branchNode = n;
+			if( branchNode == VuKernelRefitNode::NO_INDEX ) return tokens;
+
+			std::vector<int> nodeStages;
+			if( !buildTwoStageRefitNodeStages( plan, nodeStages ) ) return tokens;
+			std::vector<VuKernelRenameDecision> mveDecisions;
+			std::vector<unsigned int> mveSeedMasks;
+			if( !buildTwoStageMveDecisions( plan, indexedTokens,
+			                                mveDecisions, &mveSeedMasks ) )
+				return tokens;
+			if( mveSeedMasks.size() != mveDecisions.size() ) return tokens;
+
+			std::list<Token> replacement;
+			VuKernelBlockRange prologRange;
+			VuKernelBlockRange mainBRange;
+			VuKernelBlockRange drainBRange;
+			VuKernelBlockRange mainARange;
+			VuKernelBlockRange drainARange;
+			VuKernelBlockRange* ranges[5] = {
+				&prologRange, &mainBRange, &drainBRange, &mainARange, &drainARange
+			};
+			for( unsigned int r = 0; r < 5u; ++r )
+			{
+				ranges[r]->II = plan.kernelRewriteRefitII;
+				ranges[r]->forceRefitGrid = true;
+			}
+			const std::string prologLabel = plan.label + "__MVE_PROLOG";
+			prologRange.mainLabel = prologLabel;
+			prologRange.endLabel = prologEndLabel;
+			prologRange.hasClosingBranch = false;
+			mainBRange.mainLabel = mainBLabel;
+			mainBRange.endLabel = drainBLabel;
+			mainBRange.hasClosingBranch = true;
+			drainBRange.mainLabel = drainBLabel;
+			drainBRange.endLabel = drainBEndLabel;
+			drainBRange.hasClosingBranch = false;
+			mainARange.mainLabel = mainALabel;
+			mainARange.endLabel = drainALabel;
+			mainARange.hasClosingBranch = true;
+			drainARange.mainLabel = drainALabel;
+			drainARange.endLabel = exitLabel;
+			drainARange.hasClosingBranch = false;
+
+			// Iteration 0 owns the architectural (A) version. The first overlap
+			// kernel launches iteration 1 on the alternate (B) version while
+			// draining iteration 0 on A. Subsequent kernels alternate A/B.
+			replacement.push_back( refitEnvelopeLabelToken( *i, plan.label ) );
+			for( unsigned int d = 0; d < mveDecisions.size(); ++d )
+			{
+				if( mveSeedMasks[d] == 0u ) continue;
+				replacement.push_back( makeTwoStageMveSeedToken(
+				    *i, mveDecisions[d], mveSeedMasks[d] ) );
+			}
+			replacement.push_back( refitEnvelopeLabelToken( *i, prologLabel ) );
+			if( !appendMveRefitGridBody( plan, plan.kernelRewriteRefitPrologTokens,
+			                            branchNode, nodeStages,
+			                            /*alternateStage=*/-1,
+			                            mveDecisions,
+			                            indexedTokens, replacement, prologRange ) )
+				return tokens;
+			replacement.push_back( refitEnvelopeLabelToken( *i, prologEndLabel ) );
+
+			const Token& branchSrc = *indexedTokens[plan.branchTokenIndex];
+			replacement.push_back( invertedBranchToDrainToken( branchSrc, drainALabel ) );
+			replacement.push_back( branchDelayNopToken( branchSrc ) );
+
+			replacement.push_back( refitEnvelopeLabelToken( *i, mainBLabel ) );
+			if( !appendMveRefitGridBody( plan, plan.kernelRewriteRefitMainTokens,
+			                            branchNode, nodeStages,
+			                            /*alternateStage=*/0,
+			                            mveDecisions,
+			                            indexedTokens, replacement, mainBRange ) )
+				return tokens;
+			Token mainBBranch( branchSrc );
+			mainBBranch.setLabel( "" );
+			if( !retargetBranchTokenTarget( mainBBranch, mainALabel ) ) return tokens;
+			replacement.push_back( mainBBranch );
+
+			// A not-taken MAIN_B branch falls through here. Finish the final odd
+			// iteration on B, then normalize the rotated fields back to A before
+			// leaving the transformed loop.
+			replacement.push_back( refitEnvelopeLabelToken( *i, drainBLabel ) );
+			if( !appendMveRefitGridBody( plan, plan.kernelRewriteRefitDrainTokens,
+			                            VuKernelRefitNode::NO_INDEX, nodeStages,
+			                            /*alternateStage=*/1,
+			                            mveDecisions,
+			                            indexedTokens, replacement, drainBRange ) )
+				return tokens;
+			replacement.push_back( refitEnvelopeLabelToken( *i, drainBEndLabel ) );
+			for( unsigned int d = 0; d < mveDecisions.size(); ++d )
+			{
+				Token restore = makeKernelRenameMoveToken(
+				    *i, mveDecisions[d] );
+				restore.setFlags( restore.flags() | Token::PREORDERED );
+				replacement.push_back( restore );
+			}
+			replacement.push_back( unconditionalBranchToken( branchSrc, exitLabel ) );
+			replacement.push_back( branchDelayNopToken( branchSrc ) );
+
+			replacement.push_back( refitEnvelopeLabelToken( *i, mainALabel ) );
+			if( !appendMveRefitGridBody( plan, plan.kernelRewriteRefitMainTokens,
+			                            branchNode, nodeStages,
+			                            /*alternateStage=*/1,
+			                            mveDecisions,
+			                            indexedTokens, replacement, mainARange ) )
+				return tokens;
+			Token mainABranch( branchSrc );
+			mainABranch.setLabel( "" );
+			if( !retargetBranchTokenTarget( mainABranch, mainBLabel ) ) return tokens;
+			replacement.push_back( mainABranch );
+
+			replacement.push_back( refitEnvelopeLabelToken( *i, drainALabel ) );
+			if( !appendMveRefitGridBody( plan, plan.kernelRewriteRefitDrainTokens,
+			                            VuKernelRefitNode::NO_INDEX, nodeStages,
+			                            /*alternateStage=*/-1,
+			                            mveDecisions,
+			                            indexedTokens, replacement, drainARange ) )
+				return tokens;
+			replacement.push_back( refitEnvelopeLabelToken( *i, exitLabel ) );
+
+			output.splice( output.end(), replacement );
+			outRanges.push_back( prologRange );
+			outRanges.push_back( mainBRange );
+			outRanges.push_back( drainBRange );
+			outRanges.push_back( mainARange );
+			outRanges.push_back( drainARange );
+
+			while( index <= plan.branchTokenIndex && i != tokens.end() )
+			{
+				++i;
+				++index;
+			}
 			continue;
 		}
 

@@ -1041,7 +1041,8 @@ bool CodeGenerator::beginProcess(const std::list<Token>& tokens)
 			// the responsibility of applyVuSoftwarePipelinePlans below.
 			if( std::getenv("OPENVCL_USE_GENERIC_KERNEL_REWRITE") != NULL
 			    || std::getenv("OPENVCL_EXPERIMENT_SELF_CONTAINED_REFIT_EMISSION") != NULL
-			    || std::getenv("OPENVCL_EXPERIMENT_TWO_STAGE_REFIT_ENVELOPE") != NULL )
+			    || std::getenv("OPENVCL_EXPERIMENT_TWO_STAGE_REFIT_ENVELOPE") != NULL
+			    || std::getenv("OPENVCL_EXPERIMENT_TWO_STAGE_MVE") != NULL )
 			{
 				// 9.G-1h-4a-2: capture MAIN-body ranges out-of-band
 				// for the 4a-3 scheduler-bypass consumer.

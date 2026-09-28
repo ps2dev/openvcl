@@ -380,9 +380,10 @@ struct VuLoopPipelineOpportunity
 	std::vector<int> tokenStageOffsets;
 	std::map<std::string, unsigned int> stageRotationRegisters;
 
-	// Track 9.G step 6e — VuKernelRewritePlan scaffolding (diagnostic-only).
+	// Track 9.G step 6e — VuKernelRewritePlan scaffolding.
 	// Populated by findVuLoopPipelineOpportunities from the modulo placer's
-	// VuKernelLayout. No emission path consumes these yet.
+	// VuKernelLayout. Experimental kernel/refit emitters consume a validated
+	// subset of these fields; normal codegen remains unaffected unless enabled.
 	unsigned int kernelRewriteII;
 	unsigned int kernelRewriteStageCount;
 	unsigned int kernelRewriteConflicts;
@@ -391,9 +392,9 @@ struct VuLoopPipelineOpportunity
 	std::vector<unsigned int> kernelRewriteDrainTokens;
 	std::vector<unsigned int> kernelRewriteEntryStages;
 
-	// Track 9.G step 6f — VuKernelRegisterPlan + rename-hint scaffolding
-	// (diagnostic-only). Populated alongside the rewrite-plan scaffolding
-	// when the modulo placer runs. No emission path consumes these yet.
+	// Track 9.G step 6f — VuKernelRegisterPlan + rename-hint scaffolding.
+	// Populated alongside the rewrite-plan scaffolding when the modulo placer
+	// runs. Experimental rename/refit paths consume only explicitly gated plans.
 	unsigned int kernelRewriteRegCount;
 	unsigned int kernelRewriteWawCount;
 	unsigned int kernelRewriteRawCount;
@@ -478,6 +479,8 @@ struct VuLoopPipelineOpportunity
 	std::vector<unsigned int>      kernelRewriteRefitDrainTokens;
 	bool kernelRewriteExactCandidateSelected;
 	unsigned int kernelRewriteExactCandidateSourceII;
+	bool kernelRewriteTwoStageMveSelected;
+	unsigned int kernelRewriteTwoStageMveSourceII;
 };
 
 // True when an expanded-DDG refit represents one complete loop iteration in a
@@ -538,10 +541,11 @@ struct VuSoftwarePipelineRewritePlan
 	std::vector<int> tokenStageOffsets;
 	std::map<std::string, unsigned int> stageRotationRegisters;
 
-	// Track 9.G step 6e — VuKernelRewritePlan scaffolding (diagnostic-only).
+	// Track 9.G step 6e — VuKernelRewritePlan scaffolding.
 	// Mirrors the like-named fields on VuLoopPipelineOpportunity. Populated by
 	// buildVuSoftwarePipelineRewritePlans by copy from the source opportunity.
-	// No emission path consumes these yet.
+	// Experimental kernel/refit emitters consume these only after their own
+	// structural and register-safety gates pass.
 	unsigned int kernelRewriteII;
 	unsigned int kernelRewriteStageCount;
 	unsigned int kernelRewriteConflicts;
@@ -587,8 +591,8 @@ struct VuSoftwarePipelineRewritePlan
 	// reaching back into analysis state. After 4b-6 these are populated
 	// unconditionally (whenever the refit path was eligible); the
 	// OPENVCL_USE_EXPANDED_DDG_PLACER env var now only toggles the
-	// `[refit-codegen]` stderr line in CodeGenerator. Dormant: no
-	// emission path branches on these yet.
+	// `[refit-codegen]` stderr line in CodeGenerator. Experimental direct,
+	// two-stage-envelope and MVE emitters consume these after explicit gates.
 	unsigned int kernelRewriteRefitII;
 	unsigned int kernelRewriteRefitStageCount;
 	unsigned int kernelRewriteRefitConflicts;
@@ -601,8 +605,8 @@ struct VuSoftwarePipelineRewritePlan
 	// Track 9.G-1h step 4b-7a — mirror of opportunity-side refit-grid
 	// + node descriptors, copied through by
 	// buildVuSoftwarePipelineRewritePlans. See the opportunity field
-	// comment for semantics. MAIN is consumed by 4b-7b/c; PROLOG/DRAIN
-	// remain diagnostic until the full semantic-envelope emitter lands.
+	// comment for semantics. MAIN is consumed by the direct path, while the
+	// opt-in two-stage envelope/MVE emitters also consume PROLOG and DRAIN.
 	std::vector<VuKernelRefitNode> kernelRewriteRefitNodes;
 	std::vector<unsigned int>      kernelRewriteRefitPrologTokens;
 	std::vector<unsigned int>      kernelRewriteRefitMainTokens;
@@ -611,6 +615,8 @@ struct VuSoftwarePipelineRewritePlan
 	unsigned int directSelfContainedSourceII;
 	bool twoStageRefitEnvelope;
 	unsigned int twoStageRefitSourceII;
+	bool twoStageMve;
+	unsigned int twoStageMveSourceII;
 };
 
 std::vector<VuBasicBlock> buildVuBasicBlocks( const std::list<Token>& tokens );

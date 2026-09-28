@@ -395,10 +395,28 @@ codegen predeterminado hasta que exista una mejora general validada.
 	    valores simultáneos de iteraciones solapadas de forma nativa. El scaffolding
 	    PROLOG/MAIN/DRAIN puede permanecer opt-in, pero ningún VSM real debe usarlo
 	    mientras `kernelRewriteRefitRenameHintCount != 0`. La baseline Release
-	    `two-stage-refit-safety-003` completa los 13 renderers y las cuatro variantes
-	    sin fallos: los 52 VSM, las métricas de coste y `vutext-bytes.json` son
-	    idénticos a `corrected-refit-final-014`, confirmando que este scaffolding
-	    permanece aislado del codegen por defecto.
+		    `two-stage-refit-safety-003` completa los 13 renderers y las cuatro variantes
+		    sin fallos: los 52 VSM, las métricas de coste y `vutext-bytes.json` son
+		    idénticos a `corrected-refit-final-014`, confirmando que este scaffolding
+		    permanece aislado del codegen por defecto.
+		12. El primer modelo MVE stage-aware ya sustituye el doble renombrado por dos
+		    versiones físicas A/B de cada familia VF que cruza etapas. Para el experimento
+		    `OPENVCL_EXPERIMENT_TWO_STAGE_MVE=1` el sweep no aplica primero las decisiones
+		    source: deja que el refit final describa directamente los valores solapados.
+		    En `indexed/xform_loop_lid` los cuatro source II 35..38 convergen a un refit
+		    **II=35, stageCount=2**, 62 nodos MAIN, 37 nodos PROLOG y 25 nodos DRAIN;
+		    aparecen cinco familias VF finales y las cinco obtienen una versión scratch.
+		    El emisor alterna el kernel A/B, siembra sólo componentes live-in invariantes,
+		    restaura la versión B al salir por una iteración impar y rechaza cualquier
+		    componente read-before-write que también sea escrito durante la iteración
+		    (estado realmente loop-carried). El diferencial PCSX2 real pasa seis casos de
+		    1,2,3,4,6 y 8 iteraciones, hasta 48 qwords de salida, índices variados y estado
+		    final. Esto prueba mucho más que el scaffolding estructural, pero sigue siendo
+		    una prueba focalizada: el objeto VU del fixture experimental mide 1728 bytes
+		    frente a 1200 del baseline y no hay todavía medida de rendimiento en PS2 real.
+		    La baseline `two-stage-mve-safety-004` completa los 13 renderers y las cuatro
+		    variantes sin fallos; sus 52 VSM, costes y `vutext-bytes.json` son idénticos a
+		    `two-stage-refit-safety-003`, por lo que MVE permanece totalmente opt-in.
 
 **Punto de decisión:** si existe `SAT` por debajo del II greedy, mejorar el
 algoritmo de placement usando el witness y la comparación con Sony. Si todos

@@ -4494,6 +4494,134 @@ TEST_CASE("VuSchedulerAnalysis: two-stage refit emits prolog main and drain cont
     CHECK(rejected.size() == program.tokenizer.tokens().size());
 }
 
+TEST_CASE("VuSchedulerAnalysis: two-stage MVE closes VF components and seeds invariant live-ins")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("add.xy vf04, vf05, vf06"));
+    REQUIRE(program.parse("mfir.w vf04, vi01"));
+    REQUIRE(program.parse("sq vf04, 0(vi04)"));
+    REQUIRE(program.parse("ibne vi02, vi03, loop_lid"));
+    REQUIRE(program.parse("done_lid:"));
+
+    vcl::VuSoftwarePipelineRewritePlan plan;
+    plan.label = "loop_lid";
+    plan.labelTokenIndex = 0u;
+    plan.branchTokenIndex = 4u;
+    plan.twoStageMve = true;
+    plan.twoStageMveSourceII = 4u;
+    plan.kernelRewriteRefitII = 4u;
+    plan.kernelRewriteRefitStageCount = 2u;
+    plan.kernelRewriteRefitConflicts = 0u;
+    plan.kernelRewriteRefitRenameHintCount = 1u;
+    plan.kernelRewriteRefitRenameDecisionCount = 1u;
+    plan.kernelRewriteRefitAssignedRenameDecisionCount = 1u;
+
+    const unsigned int sourceIndices[] = { 1u, 2u, 3u, 4u };
+    for (unsigned int n = 0; n < 4u; ++n) {
+        vcl::VuKernelRefitNode node;
+        node.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+        node.sourceTokenIndex = sourceIndices[n];
+        plan.kernelRewriteRefitNodes.push_back(node);
+    }
+    plan.kernelRewriteRefitMainTokens.assign(16u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitPrologTokens.assign(16u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitDrainTokens.assign(16u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitMainTokens[0] = 0u;
+    plan.kernelRewriteRefitMainTokens[4] = 1u;
+    plan.kernelRewriteRefitMainTokens[8] = 2u;
+    plan.kernelRewriteRefitMainTokens[13] = 3u;
+    plan.kernelRewriteRefitPrologTokens[0] = 0u;
+    plan.kernelRewriteRefitPrologTokens[13] = 3u;
+    plan.kernelRewriteRefitDrainTokens[4] = 1u;
+    plan.kernelRewriteRefitDrainTokens[8] = 2u;
+
+    vcl::VuKernelRenameDecision decision;
+    decision.reg = "VF04.xy";
+    decision.scratch = "VF31";
+    decision.assigned = true;
+    plan.kernelRewriteRefitRenameDecisions.push_back(decision);
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans(1u, plan);
+    std::vector<vcl::VuKernelBlockRange> ranges;
+    const std::list<vcl::Token> output =
+        vcl::applyVuGenericKernelRewritePlans(program.tokenizer.tokens(), plans, ranges);
+
+    REQUIRE(ranges.size() == 5u);
+    CHECK(ranges[0].mainLabel == "loop_lid__MVE_PROLOG");
+    CHECK(ranges[1].mainLabel == "loop_lid__MVE_MAIN_B");
+    CHECK(ranges[3].mainLabel == "loop_lid__MVE_MAIN_A");
+
+    bool sawSeedZ = false;
+    bool sawFullRestore = false;
+    for (std::list<vcl::Token>::const_iterator t = output.begin(); t != output.end(); ++t) {
+        if (t->name() != "move" || t->arguments().size() != 2u) continue;
+        std::list<vcl::Token::Argument>::const_iterator a = t->arguments().begin();
+        const vcl::Token::Argument& dst = *a++;
+        const vcl::Token::Argument& src = *a;
+        std::string dstKey;
+        std::string srcKey;
+        if (!vcl::vuRegisterKey(dst, dstKey) || !vcl::vuRegisterKey(src, srcKey)) continue;
+        if (dstKey == "VF31" && srcKey == "VF04" && (t->fields() & vcl::Token::Z))
+            sawSeedZ = true;
+        if (dstKey == "VF04" && srcKey == "VF31"
+            && (t->fields() & (vcl::Token::X | vcl::Token::Y | vcl::Token::Z | vcl::Token::W))
+               == (vcl::Token::X | vcl::Token::Y | vcl::Token::Z | vcl::Token::W))
+            sawFullRestore = true;
+    }
+    CHECK(sawSeedZ);
+    CHECK(sawFullRestore);
+}
+
+TEST_CASE("VuSchedulerAnalysis: two-stage MVE rejects loop-carried read-before-write fields")
+{
+    vcl::Error::ResetErrorCount();
+    ParsedProgram program;
+    REQUIRE(program.parse("loop_lid:"));
+    REQUIRE(program.parse("add.xy vf04, vf04, vf06"));
+    REQUIRE(program.parse("ibne vi02, vi03, loop_lid"));
+    REQUIRE(program.parse("done_lid:"));
+
+    vcl::VuSoftwarePipelineRewritePlan plan;
+    plan.label = "loop_lid";
+    plan.labelTokenIndex = 0u;
+    plan.branchTokenIndex = 2u;
+    plan.twoStageMve = true;
+    plan.kernelRewriteRefitII = 2u;
+    plan.kernelRewriteRefitStageCount = 2u;
+    plan.kernelRewriteRefitRenameHintCount = 1u;
+    plan.kernelRewriteRefitRenameDecisionCount = 1u;
+    plan.kernelRewriteRefitAssignedRenameDecisionCount = 1u;
+
+    for (unsigned int source = 1u; source <= 2u; ++source) {
+        vcl::VuKernelRefitNode node;
+        node.role = vcl::VuKernelRefitNode::ROLE_PASSTHROUGH;
+        node.sourceTokenIndex = source;
+        plan.kernelRewriteRefitNodes.push_back(node);
+    }
+    plan.kernelRewriteRefitMainTokens.assign(8u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitPrologTokens.assign(8u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitDrainTokens.assign(8u, vcl::VuKernelRefitNode::NO_INDEX);
+    plan.kernelRewriteRefitMainTokens[0] = 0u;
+    plan.kernelRewriteRefitMainTokens[5] = 1u;
+    plan.kernelRewriteRefitPrologTokens[0] = 0u;
+    plan.kernelRewriteRefitPrologTokens[5] = 1u;
+
+    vcl::VuKernelRenameDecision decision;
+    decision.reg = "VF04.xy";
+    decision.scratch = "VF31";
+    decision.assigned = true;
+    plan.kernelRewriteRefitRenameDecisions.push_back(decision);
+
+    std::vector<vcl::VuSoftwarePipelineRewritePlan> plans(1u, plan);
+    std::vector<vcl::VuKernelBlockRange> ranges;
+    const std::list<vcl::Token> output =
+        vcl::applyVuGenericKernelRewritePlans(program.tokenizer.tokens(), plans, ranges);
+    CHECK(ranges.empty());
+    CHECK(output.size() == program.tokenizer.tokens().size());
+}
+
 // Track 9.G step 6e: VuKernelRewritePlan scaffolding fields default to zero/empty.
 TEST_CASE("VuSchedulerAnalysis: kernel-rewrite scaffolding defaults are zero/empty")
 {
@@ -4511,6 +4639,8 @@ TEST_CASE("VuSchedulerAnalysis: kernel-rewrite scaffolding defaults are zero/emp
     CHECK(opp.kernelRewriteRefitRenameDecisions.empty());
     CHECK(!opp.kernelRewriteExactCandidateSelected);
     CHECK(opp.kernelRewriteExactCandidateSourceII == 0u);
+    CHECK(!opp.kernelRewriteTwoStageMveSelected);
+    CHECK(opp.kernelRewriteTwoStageMveSourceII == 0u);
 
     vcl::VuSoftwarePipelineRewritePlan plan;
     CHECK(plan.kernelRewriteII == 0u);
@@ -4528,6 +4658,8 @@ TEST_CASE("VuSchedulerAnalysis: kernel-rewrite scaffolding defaults are zero/emp
     CHECK(plan.directSelfContainedSourceII == 0u);
     CHECK(!plan.twoStageRefitEnvelope);
     CHECK(plan.twoStageRefitSourceII == 0u);
+    CHECK(!plan.twoStageMve);
+    CHECK(plan.twoStageMveSourceII == 0u);
 }
 
 // Track 9.G step 6f: register-rewrite scaffolding fields default to zero/empty.

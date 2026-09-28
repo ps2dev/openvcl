@@ -426,16 +426,34 @@ it grows to II=49 and produces seven new decisions, only two assignable. Other
 subsets show the same pattern. Therefore do **not** relax the final-rename gate
 and do not add another recursive rename layer.
 
-The next scheduler milestone is a generic modulo-variable-expansion / stage-aware
-rotation model for the final two-stage layout. It must represent simultaneous
-values from overlapped iterations natively, then feed a fresh exact refit and a
-runtime differential. The dormant PROLOG/MAIN/DRAIN emitter may be reused once
-that register plan reports zero unresolved cross-stage hazards. The reproducible
-probe is `test/ps2/vu1_two_stage_refit_probe`. A fresh Release corpus validation
-(`two-stage-refit-safety-003`) is complete with no failures: all 52 VSM outputs,
-static-cost metrics and `.vutext` byte counts are identical to
-`corrected-refit-final-014`, so the guarded scaffolding remains isolated from the
-default compiler path.
+The first generic modulo-variable-expansion / stage-aware rotation prototype is
+now implemented behind `OPENVCL_EXPERIMENT_TWO_STAGE_MVE=1`. In that mode the
+candidate sweep deliberately skips the older source-level scratch/materialize
+rename before the final refit. The final two-stage layout itself defines the
+cross-stage VF families, and the emitter gives them alternating A/B physical
+versions. For `indexed/xform_loop_lid`, source II values 35..38 all refit to
+**II=35, stageCount=2**, with 62 MAIN nodes, 37 PROLOG nodes and 25 DRAIN nodes.
+The final register plan has five VF decisions and all five are assigned.
+
+The MVE emission path seeds only invariant live-in components into the alternate
+bank, alternates MAIN_A/MAIN_B kernels, drains the matching bank on exit, and
+normalizes B back to the architectural A version on odd-iteration exits. A field
+that is read before first write and also written later in the iteration is treated
+as true loop-carried state and blocks the transformation rather than being seeded.
+The permanent `test/ps2/vu1_two_stage_mve_differential` fixture assembles both
+candidate and conservative baseline and passes PCSX2 for six cases spanning 1, 2,
+3, 4, 6 and 8 iterations, varied vertex-index pairs, up to 48 output qwords and
+final loop pointers: `VU1_DIFFERENTIAL_PASS two-stage-mve cases=6 max-iterations=8`.
+
+This is still an experiment, not a production promotion. On the extracted fixture
+the candidate VU object is 1728 bytes versus 1200 bytes for the conservative
+baseline, and no PS2 hardware timing has been measured. A fresh Release corpus
+validation (`two-stage-mve-safety-004`) is complete with no failures: all 52 VSM
+outputs, static-cost metrics and `.vutext` byte counts are identical to
+`two-stage-refit-safety-003`. The next useful scheduler work is therefore to
+generalize and stress the MVE proof (additional loop shapes/live-ins and runtime
+cases) and then evaluate whether the two-stage II=35 steady state can amortize its
+larger envelope before considering any default-codegen promotion.
 
 The shared PCSX2 differential runner also now consumes the emulator's stdout as
 unbuffered bytes. The previous `selectors` + `TextIO.readline()` combination could

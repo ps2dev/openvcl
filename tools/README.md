@@ -235,6 +235,30 @@ them, that no `__REFIT_MAIN` envelope is emitted, that the experimental/default
 VSM files remain byte-identical while blocked, and that both assemble with
 `dvp-as`.
 
+`OPENVCL_EXPERIMENT_TWO_STAGE_MVE=1` is the stage-aware follow-up. It does not
+stack another ordinary scratch/materialize layer on top of the source candidate.
+Instead it clears the source-level rename plan before the final refit, lets that
+two-stage layout identify the cross-stage VF families, then assigns an alternate
+physical version to each family and alternates A/B kernels. Invariant live-in
+fields are seeded into B; read-before-write fields which are also written later in
+the iteration are rejected as true loop-carried state. For the current indexed
+case the bounded source candidates all refit to II=35 with five final decisions,
+all assigned. The flag remains disabled by default.
+
+Validate the MVE emitter with:
+
+```sh
+make -C test/ps2/vu1_two_stage_mve_differential clean all
+python3 test/ps2/vu1_differential/run_pcsx2.py \
+  --elf test/ps2/vu1_two_stage_mve_differential/vu1_two_stage_mve_differential.elf
+```
+
+The expected marker is
+`VU1_DIFFERENTIAL_PASS two-stage-mve cases=6 max-iterations=8`. The six cases
+exercise 1, 2, 3, 4, 6 and 8 iterations, varied index pairs, up to 48 output
+qwords and final loop pointers. This fixture validates semantics only; it is not a
+real-PS2 timing measurement or a proof for every loop shape.
+
 Validate that direct path with the extracted indexed transform-loop differential:
 
 ```sh
