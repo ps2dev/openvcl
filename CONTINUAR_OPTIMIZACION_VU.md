@@ -465,6 +465,31 @@ MVE proof across additional loop shapes and live-in/loop-carried patterns, and t
 measure whether the larger 1728-byte object (vs 1200) is actually faster on real
 PS2 hardware before any default-codegen promotion.
 
+MVE is also no longer an indexed-only result. A full opt-in sweep over the 13
+ps2gl renderers finds four changed/eligible programs: `indexed` plus
+`general_nospec`, `general_nospec_quad` and `general_nospec_tri`. The three
+no-spec variants all select the same `pt_light_vert_loop_lid` shape: source II
+49 -> refit II 49, two stages, 31 MAIN nodes, 18 PROLOG nodes, 13 DRAIN nodes,
+and three final VF versioning decisions, all assigned. Their emitted VSMs
+assemble. The spec/pv-diff/general variants are not rejected by an MVE safety
+gate: their relevant source MIIs are above the diagnostic ceiling of 64
+(point-light reaches 114; xform variants observed at 104..145). `fast`,
+`fast_nolights` and `scei` expose only single-Q plans for their transform loop,
+so they never produce the multi-Q source envelope consumed by the MVE sweep.
+Do not relax either boundary based on this corpus observation alone.
+
+The new permanent
+`test/ps2/vu1_two_stage_mve_point_light_differential` fixture validates that
+second loop family independently of the indexed fixture. It keeps the real
+no-spec point-light arithmetic, supplies non-zero light/material/vertex state,
+varies that state over eight cases, and checks 1..8 iterations bit-for-bit in
+PCSX2 including final VI pointers. Expected marker:
+`VU1_DIFFERENTIAL_PASS two-stage-mve-point-light cases=8 max-iterations=8`.
+The candidate object is 1728 bytes versus 672 for the conservative fixture.
+The path-aware estimated loop cost is 80 vs 81 cycles at one iteration, so this
+case also amortizes statically immediately; code size and real-hardware timing,
+not modeled crossover, are the remaining profitability questions.
+
 The shared PCSX2 differential runner also now consumes the emulator's stdout as
 unbuffered bytes. The previous `selectors` + `TextIO.readline()` combination could
 read ahead several lines and then miss a PASS/FAIL marker left in Python's text

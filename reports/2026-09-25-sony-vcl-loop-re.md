@@ -293,3 +293,19 @@ reaches 504 versus 1673 at 12 iterations. Thus this loop's remaining uncertainty
 is not static amortization but whether the larger code footprint and modeled
 schedule translate into a real PS2 speedup. No claim about Sony's profitability
 threshold or runtime policy follows from these OpenVCL-only estimates.
+
+The same MVE mechanism is now observed on a second ps2gl loop family. Under the
+opt-in corpus sweep, all three general no-spec variants transform
+`pt_light_vert_loop_lid` with source II 49 -> refit II 49, two stages, 31 MAIN
+nodes, 18 PROLOG nodes, 13 DRAIN nodes and three assigned VF versions. A focused
+PCSX2 differential using that arithmetic with non-zero inputs passes 1..8 loop
+iterations bit-for-bit. This materially strengthens the OpenVCL-side evidence
+that stage-aware versioning is a reusable mechanism rather than an indexed-loop
+special case. It still says nothing about whether Sony uses the same A/B scheme.
+
+The broader corpus also gives a useful negative boundary. Specular/pv-diff
+families have source MIIs above the current bounded-sweep ceiling (104..145 in
+the observed transform loops and 114 for point-light), while fast/fast_nolights/
+scei expose only the existing single-Q planner shape. These cases were not made
+eligible by weakening safety constraints, so no comparison with Sony should
+treat their current lack of MVE output as an infeasibility result.

@@ -428,6 +428,25 @@ codegen predeterminado hasta que exista una mejora general validada.
 	    envelope se amortiza inmediatamente dentro del modelo actual; la duda que
 	    queda es el coste real en hardware y el crecimiento de código (+528 bytes en
 	    este fixture), no el crossover estático. Estas cifras no son timings de PS2.
+	14. Un barrido opt-in de los 13 renderers demuestra que MVE no es específico de
+	    `indexed`: `general_nospec`, `general_nospec_quad` y `general_nospec_tri`
+	    transforman también `pt_light_vert_loop_lid`. Los cuatro source II 49..52
+	    convergen a **refit II=49, stageCount=2**, con 31 nodos MAIN, 18 PROLOG, 13
+	    DRAIN y tres familias VF versionadas, todas asignables. Los VSM resultantes
+	    ensamblan. `general`, `general_*` con spec y `general_pv_diff*` quedan fuera
+	    del barrido acotado porque sus MII relevantes (104..145; point-light=114)
+	    superan el ceiling diagnóstico 64; `fast`, `fast_nolights` y `scei` sólo
+	    exponen el planner single-Q y no generan el envelope multi-Q requerido por
+	    este experimento. No se relaja ninguno de esos gates.
+	    Un segundo diferencial PCSX2 independiente conserva la aritmética real del
+	    point-light no-spec, usa constantes/datos no nulos y valida 1..8 iteraciones:
+	    `VU1_DIFFERENTIAL_PASS two-stage-mve-point-light cases=8 max-iterations=8`.
+	    Por tanto la evidencia runtime cubre ya dos formas de loop distintas. En ese
+	    fixture el objeto experimental es 1728 bytes frente a 672 del baseline; el
+	    modelo de coste del loop sigue favoreciendo ligeramente MVE incluso a una
+	    iteración (80 vs 81 ciclos estimados incluyendo drain/exit), pero el aumento
+	    de código refuerza que la promoción necesita una política de rentabilidad y
+	    medida en PS2 real.
 
 **Punto de decisión:** si existe `SAT` por debajo del II greedy, mejorar el
 algoritmo de placement usando el witness y la comparación con Sony. Si todos

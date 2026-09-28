@@ -274,6 +274,29 @@ for 12 iterations the estimated transformed-region cost is 504 cycles versus
 1673 for the conservative baseline. Treat this as a compiler cost-model result,
 not a hardware timing claim.
 
+MVE has a second runtime differential for the no-specular point-light loop:
+
+```sh
+make -C test/ps2/vu1_two_stage_mve_point_light_differential clean all
+python3 test/ps2/vu1_differential/run_pcsx2.py \
+  --elf test/ps2/vu1_two_stage_mve_point_light_differential/vu1_two_stage_mve_point_light_differential.elf
+```
+
+Expected marker:
+`VU1_DIFFERENTIAL_PASS two-stage-mve-point-light cases=8 max-iterations=8`.
+The fixture retains the real `pt_light_vert_loop_lid` arithmetic, varies non-zero
+light/material/vertex data and compares every written result plus final pointers.
+Its candidate object is currently 1728 bytes versus 672 for the baseline. This is
+semantic evidence for a second loop family, not a performance measurement.
+
+A full opt-in ps2gl corpus probe currently makes MVE changes in four renderers:
+`indexed`, `general_nospec`, `general_nospec_quad` and `general_nospec_tri`.
+The no-spec variants all select point-light source/refit II 49 with three assigned
+MVE decisions. Other general/spec/pv-diff loops observed in this probe exceed the
+default bounded-sweep source-II ceiling of 64; fast/fast_nolights/scei only expose
+single-Q opportunities. These are diagnostic search/shape boundaries, not proofs
+that those loops cannot be modulo scheduled.
+
 Validate that direct path with the extracted indexed transform-loop differential:
 
 ```sh
