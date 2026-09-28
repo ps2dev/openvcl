@@ -9,12 +9,14 @@
 #define MEMORY_QW 320
 #define MEMORY_CHUNK_QW 160
 #define OUTPUT_QW 224
-#define MAX_ITERATIONS 8
+#define MAX_ITERATIONS 12
 #define OUTPUT_COUNT (MAX_ITERATIONS * 6)
 #define FINAL_STATE_QW 300
 #define CONTROL_QW 301
 #define MATRIX_QW 304
 #define VU1_DATA ((volatile u32 *)0x1100c000)
+#define PACK_INDEX(first, second) \
+    (0x3f800000u | ((u32)(second) << 8) | (u32)(first))
 
 extern u32 vsmGenericKernelRewriteCandidate_CodeStart;
 extern u32 vsmGenericKernelRewriteCandidate_CodeEnd;
@@ -33,18 +35,59 @@ static struct result baseline_result;
 
 struct test_case {
     int iterations;
+    int matrix_variant;
+    int data_variant;
     u32 packed_indices[MAX_ITERATIONS];
 };
 
 static const struct test_case test_cases[] = {
-    { 1, { 0x3f800000u, 0, 0, 0 } },
-    { 2, { 0x3f800201u, 0x3f800403u, 0, 0 } },
-    { 3, { 0x3f800105u, 0x3f800602u, 0x3f800307u, 0 } },
-    { 4, { 0x3f800908u, 0x3f800b0au, 0x3f800d0cu, 0x3f800f0eu } },
-    { 6, { 0x3f80000fu, 0x3f80010eu, 0x3f80020du, 0x3f80030cu,
-           0x3f80040bu, 0x3f80050au, 0, 0 } },
-    { 8, { 0x3f800f01u, 0x3f800e02u, 0x3f800d03u, 0x3f800c04u,
-           0x3f800b05u, 0x3f800a06u, 0x3f800907u, 0x3f800008u } },
+    { 1, 0, 0, { PACK_INDEX(0, 0) } },
+    { 2, 1, 1, { PACK_INDEX(1, 2), PACK_INDEX(3, 4) } },
+    { 3, 2, 2, { PACK_INDEX(5, 1), PACK_INDEX(2, 6), PACK_INDEX(7, 3) } },
+    { 4, 0, 3, { PACK_INDEX(8, 9), PACK_INDEX(10, 11),
+                  PACK_INDEX(12, 13), PACK_INDEX(14, 15) } },
+    { 5, 1, 4, { PACK_INDEX(15, 0), PACK_INDEX(14, 1), PACK_INDEX(13, 2),
+                  PACK_INDEX(12, 3), PACK_INDEX(11, 4) } },
+    { 6, 2, 5, { PACK_INDEX(0, 15), PACK_INDEX(1, 14), PACK_INDEX(2, 13),
+                  PACK_INDEX(3, 12), PACK_INDEX(4, 11), PACK_INDEX(5, 10) } },
+    { 7, 1, 6, { PACK_INDEX(2, 9), PACK_INDEX(4, 11), PACK_INDEX(6, 13),
+                  PACK_INDEX(8, 15), PACK_INDEX(10, 1), PACK_INDEX(12, 3),
+                  PACK_INDEX(14, 5) } },
+    { 8, 0, 7, { PACK_INDEX(1, 15), PACK_INDEX(2, 14), PACK_INDEX(3, 13),
+                  PACK_INDEX(4, 12), PACK_INDEX(5, 11), PACK_INDEX(6, 10),
+                  PACK_INDEX(7, 9), PACK_INDEX(8, 0) } },
+    { 9, 2, 8, { PACK_INDEX(0, 8), PACK_INDEX(1, 9), PACK_INDEX(2, 10),
+                  PACK_INDEX(3, 11), PACK_INDEX(4, 12), PACK_INDEX(5, 13),
+                  PACK_INDEX(6, 14), PACK_INDEX(7, 15), PACK_INDEX(8, 0) } },
+    { 10, 1, 9, { PACK_INDEX(0, 3), PACK_INDEX(1, 8), PACK_INDEX(2, 13),
+                   PACK_INDEX(3, 2), PACK_INDEX(4, 7), PACK_INDEX(5, 12),
+                   PACK_INDEX(6, 1), PACK_INDEX(7, 6), PACK_INDEX(8, 11),
+                   PACK_INDEX(9, 0) } },
+    { 12, 2, 10, { PACK_INDEX(0, 15), PACK_INDEX(1, 14), PACK_INDEX(2, 13),
+                    PACK_INDEX(3, 12), PACK_INDEX(4, 11), PACK_INDEX(5, 10),
+                    PACK_INDEX(6, 9), PACK_INDEX(7, 8), PACK_INDEX(8, 7),
+                    PACK_INDEX(9, 6), PACK_INDEX(10, 5), PACK_INDEX(11, 4) } },
+};
+
+static const float transform_matrices[3][4][4] = {
+    {
+        { 1.0f, 0.0f, 0.0f, 0.0f },
+        { 0.0f, 1.0f, 0.0f, 0.0f },
+        { 0.0f, 0.0f, 1.0f, 0.0f },
+        { 0.0f, 0.0f, 0.0f, 1.0f },
+    },
+    {
+        { 1.5f, 0.0f, 0.0f, 0.0f },
+        { 0.0f, 0.75f, 0.0f, 0.0f },
+        { 0.0f, 0.0f, 1.25f, 0.0f },
+        { 0.5f, -0.25f, 0.75f, 1.0f },
+    },
+    {
+        { 1.0f, 0.20f, 0.0f, 0.0f },
+        { -0.10f, 0.90f, 0.15f, 0.0f },
+        { 0.05f, -0.20f, 1.10f, 0.0f },
+        { 0.25f, 0.50f, -0.75f, 1.0f },
+    },
 };
 
 static u32 float_bits(float value)
@@ -74,6 +117,8 @@ static void seed_memory(const struct test_case *test)
     int q;
     int lane;
     int vertex;
+    const float case_bias = (float)test->data_variant * 0.03125f;
+    const float case_scale = 1.0f + (float)(test->data_variant & 3) * 0.0625f;
 
     for (q = 0; q < MEMORY_QW; ++q)
         for (lane = 0; lane < 4; ++lane)
@@ -84,19 +129,19 @@ static void seed_memory(const struct test_case *test)
 
     for (vertex = 0; vertex < 16; ++vertex) {
         const int input = 64 + vertex * 3;
-        const float bias = (float)vertex * 0.125f;
-        memory_seed[input][0] = float_bits(0.25f + bias);
-        memory_seed[input][1] = float_bits(0.50f + bias);
-        memory_seed[input][2] = float_bits(0.75f + bias);
+        const float bias = (float)vertex * 0.125f + case_bias;
+        memory_seed[input][0] = float_bits((0.25f + bias) * case_scale);
+        memory_seed[input][1] = float_bits(0.50f + bias * 0.50f + case_bias);
+        memory_seed[input][2] = float_bits(0.75f - bias * 0.25f + case_bias * 0.50f);
         memory_seed[input][3] = float_bits(1.00f);
-        memory_seed[input + 2][0] = float_bits(0.20f + bias);
-        memory_seed[input + 2][1] = float_bits(0.30f + bias);
-        memory_seed[input + 2][2] = float_bits(0.40f + bias);
+        memory_seed[input + 2][0] = float_bits(0.20f + bias * 0.50f);
+        memory_seed[input + 2][1] = float_bits(0.30f + bias * 0.25f + case_bias);
+        memory_seed[input + 2][2] = float_bits(0.40f + bias * 0.75f);
         memory_seed[input + 2][3] = float_bits(1.00f);
 
-        memory_seed[160 + vertex][0] = float_bits(32.0f + vertex);
-        memory_seed[160 + vertex][1] = float_bits(64.0f + vertex);
-        memory_seed[160 + vertex][2] = float_bits(96.0f + vertex);
+        memory_seed[160 + vertex][0] = float_bits(32.0f + vertex + test->data_variant * 2.0f);
+        memory_seed[160 + vertex][1] = float_bits(64.0f + vertex + test->data_variant * 1.5f);
+        memory_seed[160 + vertex][2] = float_bits(96.0f + vertex + test->data_variant * 1.0f);
         memory_seed[160 + vertex][3] = float_bits(128.0f);
     }
 
@@ -108,23 +153,10 @@ static void seed_memory(const struct test_case *test)
     memory_seed[FINAL_STATE_QW][1] = 0xdead0002u;
     memory_seed[CONTROL_QW][0] = 16u + (u32)test->iterations;
 
-    /* Row-major identity transform loaded by the VU setup code. */
-    memory_seed[MATRIX_QW + 0][0] = float_bits(1.0f);
-    memory_seed[MATRIX_QW + 0][1] = float_bits(0.0f);
-    memory_seed[MATRIX_QW + 0][2] = float_bits(0.0f);
-    memory_seed[MATRIX_QW + 0][3] = float_bits(0.0f);
-    memory_seed[MATRIX_QW + 1][0] = float_bits(0.0f);
-    memory_seed[MATRIX_QW + 1][1] = float_bits(1.0f);
-    memory_seed[MATRIX_QW + 1][2] = float_bits(0.0f);
-    memory_seed[MATRIX_QW + 1][3] = float_bits(0.0f);
-    memory_seed[MATRIX_QW + 2][0] = float_bits(0.0f);
-    memory_seed[MATRIX_QW + 2][1] = float_bits(0.0f);
-    memory_seed[MATRIX_QW + 2][2] = float_bits(1.0f);
-    memory_seed[MATRIX_QW + 2][3] = float_bits(0.0f);
-    memory_seed[MATRIX_QW + 3][0] = float_bits(0.0f);
-    memory_seed[MATRIX_QW + 3][1] = float_bits(0.0f);
-    memory_seed[MATRIX_QW + 3][2] = float_bits(0.0f);
-    memory_seed[MATRIX_QW + 3][3] = float_bits(1.0f);
+    for (q = 0; q < 4; ++q)
+        for (lane = 0; lane < 4; ++lane)
+            memory_seed[MATRIX_QW + q][lane] =
+                float_bits(transform_matrices[test->matrix_variant % 3][q][lane]);
 }
 
 static void run_program(void *start, void *end, struct result *result)
@@ -185,8 +217,8 @@ int main(void)
         }
 
         if (memcmp(&candidate_result, &baseline_result, sizeof(candidate_result)) != 0) {
-            printf("VU1_DIFFERENTIAL_DETAIL two-stage-mve case=%d iterations=%d differs from baseline\n",
-                   test_index, test->iterations);
+            printf("VU1_DIFFERENTIAL_DETAIL two-stage-mve case=%d iterations=%d matrix=%d data=%d differs from baseline\n",
+                   test_index, test->iterations, test->matrix_variant, test->data_variant);
             for (row = 0; row < OUTPUT_COUNT; ++row) {
                 printf("row %d candidate=%08x %08x %08x %08x baseline=%08x %08x %08x %08x\n",
                        row,
@@ -198,8 +230,8 @@ int main(void)
             printf("state candidate index=%08x output=%08x baseline index=%08x output=%08x\n",
                    candidate_result.final_index, candidate_result.final_output,
                    baseline_result.final_index, baseline_result.final_output);
-            printf("VU1_DIFFERENTIAL_FAIL two-stage-mve case=%d iterations=%d differs from baseline\n",
-                   test_index, test->iterations);
+            printf("VU1_DIFFERENTIAL_FAIL two-stage-mve case=%d iterations=%d matrix=%d data=%d differs from baseline\n",
+                   test_index, test->iterations, test->matrix_variant, test->data_variant);
             return 1;
         }
 

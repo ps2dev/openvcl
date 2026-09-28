@@ -409,14 +409,25 @@ codegen predeterminado hasta que exista una mejora general validada.
 		    El emisor alterna el kernel A/B, siembra sólo componentes live-in invariantes,
 		    restaura la versión B al salir por una iteración impar y rechaza cualquier
 		    componente read-before-write que también sea escrito durante la iteración
-		    (estado realmente loop-carried). El diferencial PCSX2 real pasa seis casos de
-		    1,2,3,4,6 y 8 iteraciones, hasta 48 qwords de salida, índices variados y estado
-		    final. Esto prueba mucho más que el scaffolding estructural, pero sigue siendo
-		    una prueba focalizada: el objeto VU del fixture experimental mide 1728 bytes
-		    frente a 1200 del baseline y no hay todavía medida de rendimiento en PS2 real.
+		    (estado realmente loop-carried). El diferencial PCSX2 real se ha ampliado a
+		    11 casos: 1..10 y 12 iteraciones, tres matrices de transformación, distintas
+		    semillas de geometría/color, hasta 72 qwords de salida, índices variados y
+		    estado final; candidato y baseline siguen siendo bit-identical. Esto prueba
+		    mucho más que el scaffolding estructural, pero sigue siendo una prueba
+		    focalizada: el objeto VU del fixture experimental mide 1728 bytes frente a
+		    1200 del baseline y no hay todavía medida de rendimiento en PS2 real.
 		    La baseline `two-stage-mve-safety-004` completa los 13 renderers y las cuatro
 		    variantes sin fallos; sus 52 VSM, costes y `vutext-bytes.json` son idénticos a
 		    `two-stage-refit-safety-003`, por lo que MVE permanece totalmente opt-in.
+	13. El fixture MVE incluye ahora un análisis de coste por camino real de control,
+	    en lugar de sumar una vez todos los bloques A/B mutuamente excluyentes. Para
+	    cada trip count suma sólo PROLOG, los MAIN A/B realmente atravesados, el DRAIN
+	    de la paridad final y EXIT. En `xform_loop_lid` el modelo estático ya favorece
+	    MVE desde una sola iteración: 79 vs 131 ciclos raw y 79 vs 144 estimados. A
+	    12 iteraciones son 504 vs 1517 raw y 504 vs 1673 estimados. Por tanto el
+	    envelope se amortiza inmediatamente dentro del modelo actual; la duda que
+	    queda es el coste real en hardware y el crecimiento de código (+528 bytes en
+	    este fixture), no el crossover estático. Estas cifras no son timings de PS2.
 
 **Punto de decisión:** si existe `SAT` por debajo del II greedy, mejorar el
 algoritmo de placement usando el witness y la comparación con Sony. Si todos

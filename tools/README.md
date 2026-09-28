@@ -254,10 +254,25 @@ python3 test/ps2/vu1_differential/run_pcsx2.py \
 ```
 
 The expected marker is
-`VU1_DIFFERENTIAL_PASS two-stage-mve cases=6 max-iterations=8`. The six cases
-exercise 1, 2, 3, 4, 6 and 8 iterations, varied index pairs, up to 48 output
-qwords and final loop pointers. This fixture validates semantics only; it is not a
-real-PS2 timing measurement or a proof for every loop shape.
+`VU1_DIFFERENTIAL_PASS two-stage-mve cases=11 max-iterations=12`. The cases
+exercise 1 through 10 plus 12 iterations, varied index pairs, three transform
+matrices, different geometry/color seeds, up to 72 output qwords and final loop
+pointers. This fixture validates semantics only; it is not a real-PS2 timing
+measurement or a proof for every loop shape.
+
+The fixture also exposes a path-aware cost check:
+
+```sh
+make -C test/ps2/vu1_two_stage_mve_differential cost
+```
+
+`analyze_cost.py` asks OpenVCL for per-label static and estimated costs, then
+sums only the A/B blocks actually traversed for each trip count. This avoids the
+misleading flat total obtained by counting both mutually-exclusive MAIN/drain
+paths once. On the current fixture the model first favours MVE at one iteration;
+for 12 iterations the estimated transformed-region cost is 504 cycles versus
+1673 for the conservative baseline. Treat this as a compiler cost-model result,
+not a hardware timing claim.
 
 Validate that direct path with the extracted indexed transform-loop differential:
 

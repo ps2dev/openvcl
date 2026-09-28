@@ -275,12 +275,21 @@ source candidates (II 35..38) converge to a two-stage **II=35** refit with 62 MA
 nodes; the envelope contains 37 PROLOG and 25 DRAIN nodes. Five final VF families
 need alternate versions and all five fit.
 
-The resulting A/B emitter has passed a focused PCSX2 differential over six trip
-counts and varied vertex-index inputs, including final pointer state. This is
-evidence that stage-aware versioning solves the semantic overlap which ordinary
+The resulting A/B emitter has passed a focused PCSX2 differential over 11 trip
+counts/cases (1..10 and 12 iterations), varied vertex-index inputs, three transform
+matrices and different geometry/color seeds, including final pointer state. This
+is evidence that stage-aware versioning solves the semantic overlap which ordinary
 recursive scratch/materialize renaming did not. It is not evidence that Sony uses
 the same allocator or A/B encoding. In particular, the extracted experimental VU
 object is larger than the conservative one (1728 versus 1200 bytes), and runtime
 performance on real PS2 hardware has not been measured. The Release safety corpus
 `two-stage-mve-safety-004` remains byte-identical to `two-stage-refit-safety-003`
 for all 52 normal-path VSM outputs, with identical costs and `.vutext` sizes.
+
+A path-aware static diagnostic now quantifies the A/B envelope rather than adding
+all mutually-exclusive blocks as one flat program. Under OpenVCL's cost model the
+MVE path is already cheaper at one iteration (79 estimated cycles versus 144) and
+reaches 504 versus 1673 at 12 iterations. Thus this loop's remaining uncertainty
+is not static amortization but whether the larger code footprint and modeled
+schedule translate into a real PS2 speedup. No claim about Sony's profitability
+threshold or runtime policy follows from these OpenVCL-only estimates.

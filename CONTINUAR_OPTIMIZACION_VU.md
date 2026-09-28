@@ -441,19 +441,29 @@ normalizes B back to the architectural A version on odd-iteration exits. A field
 that is read before first write and also written later in the iteration is treated
 as true loop-carried state and blocks the transformation rather than being seeded.
 The permanent `test/ps2/vu1_two_stage_mve_differential` fixture assembles both
-candidate and conservative baseline and passes PCSX2 for six cases spanning 1, 2,
-3, 4, 6 and 8 iterations, varied vertex-index pairs, up to 48 output qwords and
-final loop pointers: `VU1_DIFFERENTIAL_PASS two-stage-mve cases=6 max-iterations=8`.
+candidate and conservative baseline and now passes PCSX2 for 11 cases spanning
+1..10 and 12 iterations, varied vertex-index pairs, three transform matrices,
+different geometry/color seeds, up to 72 output qwords and final loop pointers:
+`VU1_DIFFERENTIAL_PASS two-stage-mve cases=11 max-iterations=12`.
 
 This is still an experiment, not a production promotion. On the extracted fixture
 the candidate VU object is 1728 bytes versus 1200 bytes for the conservative
 baseline, and no PS2 hardware timing has been measured. A fresh Release corpus
 validation (`two-stage-mve-safety-004`) is complete with no failures: all 52 VSM
 outputs, static-cost metrics and `.vutext` byte counts are identical to
-`two-stage-refit-safety-003`. The next useful scheduler work is therefore to
-generalize and stress the MVE proof (additional loop shapes/live-ins and runtime
-cases) and then evaluate whether the two-stage II=35 steady state can amortize its
-larger envelope before considering any default-codegen promotion.
+`two-stage-refit-safety-003`.
+
+The fixture now also has a reproducible path-aware cost diagnostic
+(`make -C test/ps2/vu1_two_stage_mve_differential cost`). It uses OpenVCL's
+per-label cost data but sums only blocks actually traversed for each trip count,
+instead of counting both mutually-exclusive A/B paths once. The current model
+already favours MVE at one iteration: 79 vs 131 raw static cycles and 79 vs 144
+latency-aware estimated cycles. At 12 iterations it reports 504 vs 1517 raw and
+504 vs 1673 estimated. Therefore static envelope amortization is no longer the
+blocking question for this loop. The remaining work is to generalize/stress the
+MVE proof across additional loop shapes and live-in/loop-carried patterns, and to
+measure whether the larger 1728-byte object (vs 1200) is actually faster on real
+PS2 hardware before any default-codegen promotion.
 
 The shared PCSX2 differential runner also now consumes the emulator's stdout as
 unbuffered bytes. The previous `selectors` + `TextIO.readline()` combination could

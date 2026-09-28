@@ -9,10 +9,11 @@ OPENVCL = ../../../openvcl
 SOURCE = ../vu1_generic_kernel_rewrite_differential/vu1_generic_kernel_rewrite.vcl
 CANDIDATE_LOG = candidate.log
 BASELINE_LOG = baseline.log
+PYTHON ?= python3
 
 all: verify-rewrite $(EE_BIN)
 
-.PHONY: pdk verify-rewrite
+.PHONY: pdk verify-rewrite cost
 pdk:
 	$(MAKE) -C ../../../examples/pdk
 
@@ -29,6 +30,9 @@ verify-rewrite: candidate.vsm baseline.vsm
 	grep -q '^xform_loop_lid__MVE_MAIN_B:' candidate.vsm
 	grep -q '^xform_loop_lid__MVE_MAIN_A:' candidate.vsm
 	! grep -q '__MVE_' baseline.vsm
+
+cost: candidate.vsm baseline.vsm
+	$(PYTHON) analyze_cost.py --openvcl $(OPENVCL) --candidate candidate.vsm --baseline baseline.vsm --max-iterations 12
 
 candidate.o: candidate.vsm
 	$(EE_DVP) $< -o $@
