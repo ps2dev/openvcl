@@ -161,6 +161,8 @@ public:
 	void setFloatOutput( const std::string& name, unsigned int regNumber );
 	void setIntegerOutput( const std::string& name, unsigned int regNumber );
 
+	bool isFloatOutput( const std::string& name ) const;
+
 	bool applyRegisterOutputs();
 
 	const Register* inputRegister( Alias::Type type, const std::string& name );

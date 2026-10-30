@@ -52,7 +52,10 @@ void BranchState::writeFloat( Token::Argument& argument )
 			assert( i != m_floats.end() );
 		}
 
-		updateDependency( argument, i->second, Alias::FLOAT, i->first, ((i->second.fields() & ~argument.fields()) != 0) );
+		// a write that leaves lanes as they were keeps them in the earlier
+		// value's register, if one of them is read before it is written again
+		const unsigned int kept = i->second.fields() & ~argument.fields();
+		updateDependency( argument, i->second, Alias::FLOAT, i->first, (kept & m_allocator.lanesLiveAfter( argument )) != 0 );
 
 		i->second.setFields( i->second.fields() | argument.fields() );
 	}
@@ -425,6 +428,13 @@ void BranchState::setFloatOutput( const std::string& name, unsigned int regNumbe
 void BranchState::setIntegerOutput( const std::string& name, unsigned int regNumber )
 {
 	m_integerOutputs[ name ] = regNumber;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool BranchState::isFloatOutput( const std::string& name ) const
+{
+	return m_floatOutputs.find( name ) != m_floatOutputs.end();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

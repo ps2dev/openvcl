@@ -53,6 +53,10 @@ public:
 	const Register* floatRegister( unsigned int regNumber ) const;
 	const Register* integerRegister( unsigned int regNumber ) const;
 
+	// the lanes of a VF write's variable that are read after the write, before
+	// they are written again (every lane where that is not known)
+	unsigned int lanesLiveAfter( const Token::Argument& write ) const;
+
 	const std::string& name();
 
 	void setDynamicThreshold( unsigned int threshold );
@@ -94,6 +98,10 @@ private:
 	// would have.
 	bool completeLiveRanges( std::list<Token>::iterator begin, std::list<Token>::iterator end, BranchState* entry );
 
+	// For each VF write that leaves lanes of its variable as they were, the
+	// lanes still read after it, for lanesLiveAfter.
+	void collectLanesLiveAfterWrites( std::list<Token>::iterator begin, std::list<Token>::iterator end, BranchState* entry );
+
 	bool processCommonDirective( Token& token );
 
 	bool processAliases( Alias*& unallocated );
@@ -123,6 +131,7 @@ private:
 
 	std::map< std::string, std::list<Token>::iterator > m_labels;
 	std::list< BranchState* > m_states;
+	std::map< const Token::Argument*, unsigned int > m_lanesLiveAfter;
 
 //	void generateReadErrorReport( const Token::Argument& arg, const Token& token );
 

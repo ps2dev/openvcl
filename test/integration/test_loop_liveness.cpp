@@ -6,6 +6,11 @@
 // read after that branch in the next lost its register there, and a later
 // temporary could take it.  Values loaded before a --cont loop and read
 // after an inner branch lost theirs the same way, which Tyra's programs do.
+//
+// A write to some lanes of a variable joined the variable's earlier value
+// whenever another lane had been written before, even when that lane was
+// written again before any read.  Values rewritten lane by lane on every
+// trip, like Tyra's output colours, stayed live for the whole program.
 
 #include "test_harness.h"
 #include "openvcl_runner.h"
@@ -119,6 +124,31 @@ namespace
         "\tlq fD, 3(vi00)\n"
         "\tadd fE, fD, fA\n"
         "\tsq fE, 4(vi00)\n"
+        "\tiaddi iN, iN, -1\n"
+        "\tibne iN, vi00, lLoop\n"
+        "\t--exit\n"
+        "\t--endexit\n";
+
+    // Each trip writes fC's xyz and then its w before storing it, so the last
+    // trip's fC is dead by then, and four VF registers are enough.
+    const char* kPartialWrites =
+        "\t.init_vf vf01, vf02, vf03, vf04\n"
+        "\t.init_vi_all\n"
+        "\t.syntax new\n"
+        "\t.name vsmLoopLiveness\n"
+        "\t--enter\n"
+        "\t--endenter\n"
+        "\tiaddiu iN, vi00, 4\n"
+        "\tlq fA, 0(vi00)\n"
+        "lLoop:\n"
+        "\tlq fB, 1(vi00)\n"
+        "\tadd.xyz fC, fA, fB\n"
+        "\tadd.w fC, fB, fB\n"
+        "\tsq fC, 2(vi00)\n"
+        "\tlq fD, 3(vi00)\n"
+        "\tadd fE, fD, fA\n"
+        "\tmul fF, fE, fD\n"
+        "\tsq fF, 4(vi00)\n"
         "\tiaddi iN, iN, -1\n"
         "\tibne iN, vi00, lLoop\n"
         "\t--exit\n"
@@ -240,5 +270,11 @@ TEST_CASE("openvcl: a value set in one loop keeps its register through a sibling
 TEST_CASE("openvcl: a broadcast operand keeps only its lane live")
 {
     ::test::RunResult result = compile(kBroadcastLane);
+    CHECK(result.exit_code == 0);
+}
+
+TEST_CASE("openvcl: a partial write starts a new value when the lanes it keeps are dead")
+{
+    ::test::RunResult result = compile(kPartialWrites);
     CHECK(result.exit_code == 0);
 }

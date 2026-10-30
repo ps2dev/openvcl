@@ -261,6 +261,9 @@ bool RegisterAllocator::process( std::list<Token>& tokens )
 			blocks.push_back( std::make_pair( (*j)->current(), *j ) );
 	}
 
+	for( std::vector< std::pair< std::list<Token>::iterator, BranchState* > >::iterator b = blocks.begin(); b != blocks.end(); ++b )
+		collectLanesLiveAfterWrites( b->first, b->second->exitPoint(), b->second );
+
 	for( j = m_states.begin(); j != m_states.end(); j++ )
 	{
 		if( !(*j) )
@@ -612,82 +615,206 @@ namespace
 		use->depend( def );
 		return true;
 	}
-}
 
-bool RegisterAllocator::completeLiveRanges( std::list<Token>::iterator begin, std::list<Token>::iterator end, BranchState* entry )
-{
-	std::vector< std::list<Token>::iterator > nodes;
-	std::map< const Token*, unsigned int > index;
-	for( std::list<Token>::iterator t = begin; t != end; ++t )
+	// A code block's tokens and the control flow between them: fall-through,
+	// branches to labels, and jr/jalr to the instruction after each bal/jalr
+	// that sets their register.
+	struct BlockFlow
 	{
-		index[ &*t ] = static_cast<unsigned int>( nodes.size() );
-		nodes.push_back( t );
-	}
-	const unsigned int count = static_cast<unsigned int>( nodes.size() );
-	if( !count )
-		return true;
+		std::vector< std::list<Token>::iterator > nodes;
+		std::vector< std::vector<unsigned int> > successors;
+		std::vector< std::vector<unsigned int> > predecessors;
+		bool fallsOffEnd;		// the last token runs on into the block's exit
+	};
 
-	// control flow: fall-through, branches to labels, and jr/jalr to the
-	// instruction after each bal/jalr that sets their register
-
-	std::vector< std::pair<const Token::Argument*, unsigned int> > returns;
-	for( unsigned int n = 0; n + 1 < count; ++n )
+	void buildBlockFlow( std::list<Token>::iterator begin, std::list<Token>::iterator end, const std::map< std::string, std::list<Token>::iterator >& labels, BlockFlow& flow )
 	{
-		const Token& token = *nodes[n];
-		if( !token.operand() || token.operand()->unit() != Operand::BRU )
-			continue;
-		for( std::list<Token::Argument>::const_iterator a = token.arguments().begin(); a != token.arguments().end(); ++a )
+		std::map< const Token*, unsigned int > index;
+		for( std::list<Token>::iterator t = begin; t != end; ++t )
 		{
-			if( (*a).flags() & Token::Argument::ADDRESS )
-				returns.push_back( std::make_pair( &*a, n + 1 ) );
+			index[ &*t ] = static_cast<unsigned int>( flow.nodes.size() );
+			flow.nodes.push_back( t );
+		}
+		const unsigned int count = static_cast<unsigned int>( flow.nodes.size() );
+		flow.successors.assign( count, std::vector<unsigned int>() );
+		flow.predecessors.assign( count, std::vector<unsigned int>() );
+		flow.fallsOffEnd = false;
+
+		std::vector< std::pair<const Token::Argument*, unsigned int> > returns;
+		for( unsigned int n = 0; n + 1 < count; ++n )
+		{
+			const Token& token = *flow.nodes[n];
+			if( !token.operand() || token.operand()->unit() != Operand::BRU )
+				continue;
+			for( std::list<Token::Argument>::const_iterator a = token.arguments().begin(); a != token.arguments().end(); ++a )
+			{
+				if( (*a).flags() & Token::Argument::ADDRESS )
+					returns.push_back( std::make_pair( &*a, n + 1 ) );
+			}
+		}
+
+		for( unsigned int n = 0; n < count; ++n )
+		{
+			const Token& token = *flow.nodes[n];
+			bool fallsThrough = true;
+
+			if( token.operand() && token.operand()->unit() == Operand::BRU )
+			{
+				fallsThrough = (token.operand()->flags() & Operand::DYNAMIC) != 0;
+
+				for( std::list<Token::Argument>::const_iterator a = token.arguments().begin(); a != token.arguments().end(); ++a )
+				{
+					if( !((*a).flags() & Token::Argument::BRANCH) )
+						continue;
+
+					if( (*a).type() == Token::Argument::IMMEDIATE )
+					{
+						std::map< std::string, std::list<Token>::iterator >::const_iterator label = labels.find( (*a).immediate() );
+						if( label == labels.end() )
+							continue;
+						std::map< const Token*, unsigned int >::const_iterator target = index.find( &*label->second );
+						if( target != index.end() )
+							flow.successors[n].push_back( target->second );
+					}
+					else if( (*a).type() == Token::Argument::INTEGER_REGISTER )
+					{
+						for( unsigned int r = 0; r < returns.size(); ++r )
+						{
+							if( sameRegister( *returns[r].first, *a ) )
+								flow.successors[n].push_back( returns[r].second );
+						}
+					}
+				}
+			}
+
+			if( fallsThrough )
+			{
+				if( n + 1 < count )
+					flow.successors[n].push_back( n + 1 );
+				else
+					flow.fallsOffEnd = true;
+			}
+		}
+
+		for( unsigned int n = 0; n < count; ++n )
+		{
+			for( unsigned int s = 0; s < flow.successors[n].size(); ++s )
+				flow.predecessors[ flow.successors[n][s] ].push_back( n );
 		}
 	}
 
-	std::vector< std::vector<unsigned int> > successors( count );
+	// The lanes a named register access touches: the fields of a VF access,
+	// 1 for VI. A broadcast named by the opcode (maddaw, mulz) leaves its
+	// operand without fields; it reads the token's broadcast lane.
+	unsigned int accessLanes( const Token& token, const Token::Argument& argument )
+	{
+		if( argument.type() != Token::Argument::FLOAT_REGISTER )
+			return 1;
+
+		unsigned int lanes = argument.fields();
+		if( !lanes && (argument.flags() & Token::Argument::BROADCAST) )
+			lanes = token.broadcast();
+		return lanes ? lanes : (Token::X|Token::Y|Token::Z|Token::W);
+	}
+
+	// The lanes of one VF variable each token reads and writes, and the writes
+	// that leave some of its lanes as they were.
+	struct VariableLanes
+	{
+		std::vector<unsigned int> read;
+		std::vector<unsigned int> written;
+		std::vector< std::pair<unsigned int, const Token::Argument*> > partialWrites;
+	};
+}
+
+void RegisterAllocator::collectLanesLiveAfterWrites( std::list<Token>::iterator begin, std::list<Token>::iterator end, BranchState* entry )
+{
+	BlockFlow flow;
+	buildBlockFlow( begin, end, m_labels, flow );
+	const unsigned int count = static_cast<unsigned int>( flow.nodes.size() );
+	const unsigned int all = Token::X|Token::Y|Token::Z|Token::W;
+
+	std::map< std::string, VariableLanes > variables;
 	for( unsigned int n = 0; n < count; ++n )
 	{
-		const Token& token = *nodes[n];
-		bool fallsThrough = true;
-
-		if( token.operand() && token.operand()->unit() == Operand::BRU )
+		const Token& token = *flow.nodes[n];
+		for( std::list<Token::Argument>::const_iterator a = token.arguments().begin(); a != token.arguments().end(); ++a )
 		{
-			fallsThrough = (token.operand()->flags() & Operand::DYNAMIC) != 0;
+			if( ((*a).content() != Token::Argument::ALIAS) || ((*a).type() != Token::Argument::FLOAT_REGISTER) )
+				continue;
 
-			for( std::list<Token::Argument>::const_iterator a = token.arguments().begin(); a != token.arguments().end(); ++a )
+			VariableLanes& variable = variables[ (*a).alias() ];
+			if( variable.read.empty() )
 			{
-				if( !((*a).flags() & Token::Argument::BRANCH) )
-					continue;
+				variable.read.assign( count, 0 );
+				variable.written.assign( count, 0 );
+			}
 
-				if( (*a).type() == Token::Argument::IMMEDIATE )
+			const unsigned int lanes = accessLanes( token, *a );
+			if( (*a).flags() & Token::Argument::WRITE )
+			{
+				variable.written[n] |= lanes;
+				if( lanes != all )
+					variable.partialWrites.push_back( std::make_pair( n, &*a ) );
+			}
+			else
+				variable.read[n] |= lanes;
+		}
+	}
+
+	for( std::map< std::string, VariableLanes >::const_iterator v = variables.begin(); v != variables.end(); ++v )
+	{
+		const VariableLanes& variable = v->second;
+		if( variable.partialWrites.empty() )
+			continue;
+
+		// the lanes read later on some path before they are written again; the
+		// block's exit reads every lane of its outputs
+
+		const unsigned int atExit = entry->isFloatOutput( v->first ) ? all : 0;
+		std::vector<unsigned int> liveIn( count, 0 );
+		std::vector<unsigned int> liveOut( count, 0 );
+		bool changed = true;
+		while( changed )
+		{
+			changed = false;
+			for( unsigned int n = count; n-- > 0; )
+			{
+				unsigned int out = (flow.fallsOffEnd && (n + 1 == count)) ? atExit : 0;
+				for( unsigned int s = 0; s < flow.successors[n].size(); ++s )
+					out |= liveIn[ flow.successors[n][s] ];
+				liveOut[n] = out;
+
+				const unsigned int in = variable.read[n] | (out & ~variable.written[n]);
+				if( in != liveIn[n] )
 				{
-					std::map< std::string, std::list<Token>::iterator >::const_iterator label = m_labels.find( (*a).immediate() );
-					if( label == m_labels.end() )
-						continue;
-					std::map< const Token*, unsigned int >::const_iterator target = index.find( &*label->second );
-					if( target != index.end() )
-						successors[n].push_back( target->second );
-				}
-				else if( (*a).type() == Token::Argument::INTEGER_REGISTER )
-				{
-					for( unsigned int r = 0; r < returns.size(); ++r )
-					{
-						if( sameRegister( *returns[r].first, *a ) )
-							successors[n].push_back( returns[r].second );
-					}
+					liveIn[n] = in;
+					changed = true;
 				}
 			}
 		}
 
-		if( fallsThrough && n + 1 < count )
-			successors[n].push_back( n + 1 );
+		for( unsigned int w = 0; w < variable.partialWrites.size(); ++w )
+			m_lanesLiveAfter[ variable.partialWrites[w].second ] = liveOut[ variable.partialWrites[w].first ];
 	}
+}
 
-	std::vector< std::vector<unsigned int> > predecessors( count );
-	for( unsigned int n = 0; n < count; ++n )
-	{
-		for( unsigned int s = 0; s < successors[n].size(); ++s )
-			predecessors[ successors[n][s] ].push_back( n );
-	}
+unsigned int RegisterAllocator::lanesLiveAfter( const Token::Argument& write ) const
+{
+	std::map< const Token::Argument*, unsigned int >::const_iterator i = m_lanesLiveAfter.find( &write );
+	return (i == m_lanesLiveAfter.end()) ? (Token::X|Token::Y|Token::Z|Token::W) : i->second;
+}
+
+bool RegisterAllocator::completeLiveRanges( std::list<Token>::iterator begin, std::list<Token>::iterator end, BranchState* entry )
+{
+	BlockFlow flow;
+	buildBlockFlow( begin, end, m_labels, flow );
+	const std::vector< std::list<Token>::iterator >& nodes = flow.nodes;
+	const std::vector< std::vector<unsigned int> >& successors = flow.successors;
+	const std::vector< std::vector<unsigned int> >& predecessors = flow.predecessors;
+	const unsigned int count = static_cast<unsigned int>( nodes.size() );
+	if( !count )
+		return true;
 
 	// every read and write of a named register, by variable
 
@@ -703,21 +830,9 @@ bool RegisterAllocator::completeLiveRanges( std::list<Token>::iterator begin, st
 
 			const bool isFloat = ((*a).type() == Token::Argument::FLOAT_REGISTER);
 
-			// a broadcast named by the opcode (maddaw, mulz) leaves its operand
-			// without fields: it reads the token's broadcast lane
-			unsigned int lanes = 1;
-			if( isFloat )
-			{
-				lanes = (*a).fields();
-				if( !lanes && ((*a).flags() & Token::Argument::BROADCAST) )
-					lanes = nodes[n]->broadcast();
-				if( !lanes )
-					lanes = Token::X|Token::Y|Token::Z|Token::W;
-			}
-
 			VariableAccess access;
 			access.node = n;
-			access.lanes = lanes;
+			access.lanes = accessLanes( *nodes[n], *a );
 			access.dependency = (*a).dependency();
 
 			VariableAccesses& accesses = variables[ Variable( isFloat ? Alias::FLOAT : Alias::INTEGER, (*a).alias() ) ];
