@@ -585,6 +585,46 @@ namespace
 		std::vector<unsigned int> live;
 	};
 
+	// The read of an output at a block's exit, and the register it names.
+	struct ExitRead
+	{
+		std::string name;
+		Dependency* read;
+		const Register* reg;
+	};
+
+	// Adds a read of every lane of each output at node `exit`, for the
+	// outputs that are written in the block or enter it as inputs.
+	void addExitReads( RegisterAllocator& allocator, BranchState* entry, Alias::Type type, const std::map<std::string,unsigned int>& outputs,
+	                   std::list<Token>::iterator exitToken, unsigned int exit, std::map< Variable, VariableAccesses >& variables, std::vector<ExitRead>& exitReads )
+	{
+		for( std::map<std::string,unsigned int>::const_iterator o = outputs.begin(); o != outputs.end(); ++o )
+		{
+			const Variable variable( type, o->first );
+			std::map< Variable, VariableAccesses >::const_iterator v = variables.find( variable );
+			const bool written = (v != variables.end()) && !v->second.writes.empty();
+			if( !written && !entry->inputRegister( type, o->first ) )
+				continue;
+
+			Dependency* read = new Dependency;
+			read->setAlias( allocator.obtainAlias( type ) );
+			read->setToken( *exitToken );
+			read->setState( entry );
+
+			VariableAccess access;
+			access.node = exit;
+			access.lanes = (type == Alias::FLOAT) ? (Token::X|Token::Y|Token::Z|Token::W) : 1;
+			access.dependency = read;
+			variables[ variable ].reads.push_back( access );
+
+			ExitRead exitRead;
+			exitRead.name = o->first;
+			exitRead.read = read;
+			exitRead.reg = (type == Alias::FLOAT) ? allocator.floatRegister( o->second ) : allocator.integerRegister( o->second );
+			exitReads.push_back( exitRead );
+		}
+	}
+
 	bool sameRegister( const Token::Argument& a, const Token::Argument& b )
 	{
 		if( a.content() != b.content() )
@@ -843,6 +883,17 @@ bool RegisterAllocator::completeLiveRanges( std::list<Token>::iterator begin, st
 		}
 	}
 
+	// the exit, node `count`, reads the block's outputs; control reaches it
+	// from the last token when that runs on
+
+	std::vector<ExitRead> exitReads;
+	if( flow.fallsOffEnd )
+	{
+		addExitReads( *this, entry, Alias::FLOAT, entry->floatOutputs(), end, count, variables, exitReads );
+		addExitReads( *this, entry, Alias::INTEGER, entry->integerOutputs(), end, count, variables, exitReads );
+	}
+	const std::vector<unsigned int> exitPredecessors( 1, count - 1 );
+
 	std::vector<ReachedRead> reached;
 	std::map< Variable, std::vector<Dependency*> > inputReads;
 
@@ -879,8 +930,9 @@ bool RegisterAllocator::completeLiveRanges( std::list<Token>::iterator begin, st
 			bool reachesEntry = ((*r).node == 0);
 
 			std::vector< std::pair<unsigned int, unsigned int> > back;
-			for( unsigned int p = 0; p < predecessors[(*r).node].size(); ++p )
-				back.push_back( std::make_pair( predecessors[(*r).node][p], (*r).lanes ) );
+			const std::vector<unsigned int>& from = ((*r).node == count) ? exitPredecessors : predecessors[(*r).node];
+			for( unsigned int p = 0; p < from.size(); ++p )
+				back.push_back( std::make_pair( from[p], (*r).lanes ) );
 
 			while( !back.empty() )
 			{
@@ -960,6 +1012,20 @@ bool RegisterAllocator::completeLiveRanges( std::list<Token>::iterator begin, st
 		else if( alias->allocatedRegister() != input )
 		{
 			reportRegisterConflict( i->first.second, alias->allocatedRegister(), input, reads[0]->token() );
+			return false;
+		}
+	}
+
+	// each output leaves in the register its out_vf or out_vi names
+
+	for( std::vector<ExitRead>::const_iterator e = exitReads.begin(); e != exitReads.end(); ++e )
+	{
+		Alias* alias = (*e).read->alias();
+		if( !alias->allocatedRegister() )
+			alias->setAllocatedRegister( (*e).reg );
+		else if( alias->allocatedRegister() != (*e).reg )
+		{
+			reportRegisterConflict( (*e).name, alias->allocatedRegister(), (*e).reg, (*e).read->token() );
 			return false;
 		}
 	}

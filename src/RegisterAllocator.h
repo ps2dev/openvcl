@@ -95,7 +95,8 @@ private:
 	// a value carried around the loop can lose its register there. This walks
 	// the block's control flow back from every read to the writes that reach
 	// it, and joins them into one alias live in between, as a complete walk
-	// would have.
+	// would have. The block's exit reads its outputs the same way, so each
+	// stays in the register its out_vf or out_vi names until then.
 	bool completeLiveRanges( std::list<Token>::iterator begin, std::list<Token>::iterator end, BranchState* entry );
 
 	// For each VF write that leaves lanes of its variable as they were, the

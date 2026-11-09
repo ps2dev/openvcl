@@ -167,6 +167,10 @@ public:
 
 	const Register* inputRegister( Alias::Type type, const std::string& name );
 
+	// the block's outputs, by name, and the number of the register each leaves in
+	const std::map<std::string,unsigned int>& floatOutputs() const;
+	const std::map<std::string,unsigned int>& integerOutputs() const;
+
 	BranchState* clone();
 
 private:
